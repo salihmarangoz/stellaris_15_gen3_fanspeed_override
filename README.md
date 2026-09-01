@@ -12,7 +12,7 @@ The project was developed for one Stellaris 15 Gen3 / XMG-Uniwill-style system r
 ## How it works
 
 - Fan commands are sent to the locally installed OEM Control Center service over its IPv6 loopback MQTT broker.
-- CPU temperature is read from the running [Core Temp](https://www.alcpu.com/CoreTemp/) application's shared-memory interface. The broken Control Center CPU temperature is never used.
+- CPU temperature is read directly from the Ryzen thermal SMN register through the signed [PawnIO](https://github.com/namazso/PawnIO) driver and a restricted AMD read module. The broken Control Center CPU temperature is never used.
 - GPU temperature is read from the NVIDIA driver with `nvidia-smi`.
 - Manual mode provides separate CPU and GPU sliders in 5% steps. Values below 30% require confirmation.
 - Auto mode checks temperatures every 15 seconds, uses `max(CPU, GPU)`, and applies one shared duty to both fans.
@@ -35,7 +35,8 @@ Auto mode never requests less than 30%. Selecting the Auto tab starts control im
 - Windows 11
 - The compatible OEM Control Center service installed and running
 - Python 3.11 or newer for source use
-- [Core Temp](https://www.alcpu.com/CoreTemp/) installed and running
+- The signed PawnIO driver (the included setup script installs it through `winget`)
+- Administrator access when the application starts
 - An NVIDIA GPU and working `nvidia-smi.exe`
 
 If either independent temperature source is unavailable or implausible, the Auto cycle fails before writing a new fan target.
@@ -47,6 +48,8 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\run_fan_control_gui.cmd
 ```
+
+The launcher runs `setup_pawnio.ps1`, which installs PawnIO once and downloads a pinned, SHA-256-verified 10 KB AMD sensor module. It then requests administrator access and starts the GUI. Core Temp is not required.
 
 The command-line tool defaults to dry-run behavior for writes:
 
@@ -66,7 +69,9 @@ Run PowerShell from the repository root:
 powershell.exe -ExecutionPolicy Bypass -File .\build_exe.ps1
 ```
 
-The script creates `.venv` if necessary, installs the build dependencies, and produces `dist\StellarisFanControl.exe` as a windowed, single-file executable. Core Temp and the OEM Control Center remain external runtime requirements.
+The script creates `.venv` if necessary, prepares PawnIO, installs the build dependencies, and produces `dist\StellarisFanControl.exe` as a windowed, single-file executable. The AMD sensor module is bundled, but the signed PawnIO driver and OEM Control Center remain external runtime requirements. The executable contains an administrator manifest and displays one UAC prompt at launch.
+
+The executable, PyInstaller work directories, downloaded AMD module, virtual environment, and generated fan backups are ignored by Git and must not be committed.
 
 ## Recovery
 

@@ -5,3 +5,4 @@ fan-backups/
 build/
 dist/
 *.spec
+third_party/pawnio/*.bin

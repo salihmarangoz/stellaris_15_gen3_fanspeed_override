@@ -1,7 +1,7 @@
 import sys
+import time
 import traceback
 from collections.abc import Callable
-from datetime import datetime
 from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
@@ -82,6 +82,8 @@ class FanControlWindow(QMainWindow):
         self._auto_inflight = False
         self._auto_backup_needed = True
         self._table_name = ""
+        self._status_message = "Connecting to Control Center..."
+        self._status_updated_at: float | None = None
         self._workers: set[Worker] = set()
 
         self._build_ui()
@@ -95,6 +97,11 @@ class FanControlWindow(QMainWindow):
         self._auto_timer = QTimer(self)
         self._auto_timer.setInterval(AUTO_INTERVAL_MS)
         self._auto_timer.timeout.connect(self.run_auto_cycle)
+
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(1000)
+        self._status_timer.timeout.connect(self._refresh_status_age)
+        self._status_timer.start()
         QTimer.singleShot(0, self.load_state)
 
     def _build_ui(self) -> None:
@@ -120,7 +127,7 @@ class FanControlWindow(QMainWindow):
         heading_row.addWidget(self.refresh_button)
         layout.addLayout(heading_row)
 
-        self.connection_label = QLabel("Connecting to Control Center...")
+        self.connection_label = QLabel(self._status_message)
         self.connection_label.setObjectName("statusText")
         layout.addWidget(self.connection_label)
 
@@ -193,7 +200,7 @@ class FanControlWindow(QMainWindow):
         curve_label.setWordWrap(True)
         curve_label.setObjectName("statusText")
         auto_layout.addWidget(curve_label)
-        self.source_label = QLabel("CPU: Core Temp | GPU: NVIDIA driver")
+        self.source_label = QLabel("CPU: PawnIO Ryzen SMN | GPU: NVIDIA driver")
         self.source_label.setWordWrap(True)
         self.source_label.setObjectName("statusText")
         auto_layout.addWidget(self.source_label)
@@ -360,7 +367,22 @@ class FanControlWindow(QMainWindow):
         self.apply_button.setEnabled(not busy)
         self.boost_button.setEnabled(not busy)
         if message:
-            self.connection_label.setText(message)
+            self._set_status(message)
+
+    def _set_status(self, message: str, *, updated: bool = False) -> None:
+        self._status_message = message
+        self._status_updated_at = time.monotonic() if updated else None
+        self._refresh_status_age()
+
+    def _refresh_status_age(self) -> None:
+        if self._status_updated_at is None:
+            self.connection_label.setText(self._status_message)
+            return
+        seconds = max(0, int(time.monotonic() - self._status_updated_at))
+        unit = "second" if seconds == 1 else "seconds"
+        self.connection_label.setText(
+            f"{self._status_message} (last updated {seconds} {unit} ago)"
+        )
 
     def _mode_changed(self, index: int) -> None:
         if self.tabs.widget(index) is self.auto_tab:
@@ -369,7 +391,7 @@ class FanControlWindow(QMainWindow):
             QTimer.singleShot(0, self.run_auto_cycle)
         else:
             self._auto_timer.stop()
-            self.connection_label.setText("Manual mode | Apply speeds when ready")
+            self._set_status("Manual mode | Apply speeds when ready")
 
     def _run(
         self,
@@ -437,7 +459,7 @@ class FanControlWindow(QMainWindow):
             self._workers.discard(worker)
             self._telemetry_inflight = False
             if not self._closing:
-                self.connection_label.setText("Connected | Telemetry temporarily unavailable")
+                self._set_status("Connected | Telemetry temporarily unavailable")
 
         worker.signals.completed.connect(complete)
         worker.signals.failed.connect(failed)
@@ -446,11 +468,9 @@ class FanControlWindow(QMainWindow):
     def _show_telemetry(self, telemetry: dict[str, Any]) -> None:
         self.cpu_reported.setText(f"Reported: {telemetry.get('CpuFanDuty', '--')}%")
         self.gpu_reported.setText(f"Reported: {telemetry.get('GpuFanDuty', '--')}%")
-        if self._table_name:
-            refreshed = datetime.now().strftime("%H:%M:%S")
-            self.connection_label.setText(
-                f"Connected | Active table: {self._table_name} "
-                f"(last refreshed {refreshed})"
+        if self._table_name and self.tabs.currentWidget() is self.manual_tab:
+            self._set_status(
+                f"Connected | Active table: {self._table_name}", updated=True
             )
 
     def _confirm_low_values(self, cpu: int, gpu: int) -> bool:
@@ -487,7 +507,7 @@ class FanControlWindow(QMainWindow):
             self.boost_button.blockSignals(True)
             self.boost_button.setChecked(False)
             self.boost_button.blockSignals(False)
-            self.connection_label.setText(
+            self._set_status(
                 f"Applied CPU {result['cpu']}% | GPU {result['gpu']}% | Ramping..."
             )
             QTimer.singleShot(4000, self.refresh_telemetry)
@@ -559,10 +579,9 @@ class FanControlWindow(QMainWindow):
             self.source_label.setText(
                 f"CPU: {temperatures.cpu_source} | GPU: {temperatures.gpu_source}"
             )
-            refreshed = datetime.now().strftime("%H:%M:%S")
-            self.connection_label.setText(
-                f"Auto mode | Max temperature {result['hottest']:.1f} C "
-                f"(last updated {refreshed})"
+            self._set_status(
+                f"Auto mode | Max temperature {result['hottest']:.1f} C",
+                updated=True,
             )
 
         def failed(details: str) -> None:
@@ -570,7 +589,7 @@ class FanControlWindow(QMainWindow):
             self._auto_inflight = False
             if not self._closing:
                 last_line = details.strip().splitlines()[-1]
-                self.connection_label.setText(f"Auto mode error | {last_line}")
+                self._set_status(f"Auto mode error | {last_line}")
 
         worker.signals.completed.connect(complete)
         worker.signals.failed.connect(failed)
@@ -578,7 +597,7 @@ class FanControlWindow(QMainWindow):
 
     def toggle_boost(self, enabled: bool) -> None:
         def complete(state: bool) -> None:
-            self.connection_label.setText(
+            self._set_status(
                 "Fan Boost enabled" if state else "Manual fan control restored"
             )
             QTimer.singleShot(1500, self.refresh_telemetry)
@@ -593,6 +612,7 @@ class FanControlWindow(QMainWindow):
         self._closing = True
         self._telemetry_timer.stop()
         self._auto_timer.stop()
+        self._status_timer.stop()
         self._service.close(wait=False)
         event.accept()
 

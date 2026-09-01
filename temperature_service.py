@@ -1,8 +1,10 @@
 import csv
 import ctypes
-import mmap
+import struct
 import subprocess
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -13,28 +15,11 @@ class Temperatures:
     gpu_source: str
 
 
-class _CoreTempData(ctypes.Structure):
-    _pack_ = 4
-    _fields_ = [
-        ("loads", ctypes.c_uint32 * 256),
-        ("tjmax", ctypes.c_uint32 * 128),
-        ("core_count", ctypes.c_uint32),
-        ("cpu_count", ctypes.c_uint32),
-        ("temps", ctypes.c_float * 256),
-        ("vid", ctypes.c_float),
-        ("cpu_speed", ctypes.c_float),
-        ("fsb_speed", ctypes.c_float),
-        ("multiplier", ctypes.c_float),
-        ("cpu_name", ctypes.c_char * 100),
-        ("fahrenheit", ctypes.c_ubyte),
-        ("delta_to_tjmax", ctypes.c_ubyte),
-        ("tdp_supported", ctypes.c_ubyte),
-        ("power_supported", ctypes.c_ubyte),
-        ("struct_version", ctypes.c_uint32),
-        ("tdp", ctypes.c_uint32 * 128),
-        ("power", ctypes.c_float * 128),
-        ("multipliers", ctypes.c_float * 256),
-    ]
+PAWNIO_DEVICE = r"\\?\GLOBALROOT\Device\PawnIO"
+PAWNIO_LOAD_BINARY = (41394 << 16) | (0x821 << 2)
+PAWNIO_EXECUTE = (41394 << 16) | (0x841 << 2)
+RYZEN_THERMAL_REGISTER = 0x00059800
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
 
 def _run_hidden(command: list[str], timeout: int = 8) -> str:
@@ -59,37 +44,113 @@ def _run_hidden(command: list[str], timeout: int = 8) -> str:
     return result.stdout.strip()
 
 
-def read_core_temp_temperature() -> tuple[float, str]:
-    size = ctypes.sizeof(_CoreTempData)
-    mapping = mmap.mmap(
-        -1,
-        size,
-        tagname="CoreTempMappingObjectEx",
-        access=mmap.ACCESS_READ,
-    )
+def _pawn_module_path() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / "pawnio" / "AMDFamily17.bin"
+    return Path(__file__).with_name("third_party") / "pawnio" / "AMDFamily17.bin"
+
+
+def _read_ryzen_smn(offset: int) -> int:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.DeviceIoControl.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.c_void_p,
+    ]
+    kernel32.DeviceIoControl.restype = ctypes.c_int
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    kernel32.ReleaseMutex.argtypes = [ctypes.c_void_p]
+    kernel32.ReleaseMutex.restype = ctypes.c_int
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_int
+
+    handle = kernel32.CreateFileW(PAWNIO_DEVICE, 0xC0000000, 3, None, 3, 0, None)
+    if handle == INVALID_HANDLE_VALUE:
+        error = ctypes.get_last_error()
+        raise RuntimeError(
+            f"Cannot open PawnIO (Windows error {error}). Install PawnIO and run as administrator."
+        )
+
+    mutex = None
     try:
-        data = _CoreTempData.from_buffer_copy(mapping[:])
+        module = _pawn_module_path().read_bytes()
+        module_buffer = ctypes.create_string_buffer(module)
+        returned = ctypes.c_uint32()
+        if not kernel32.DeviceIoControl(
+            handle,
+            PAWNIO_LOAD_BINARY,
+            module_buffer,
+            len(module),
+            None,
+            0,
+            ctypes.byref(returned),
+            None,
+        ):
+            raise RuntimeError(
+                f"PawnIO rejected the AMD sensor module (Windows error {ctypes.get_last_error()})"
+            )
+
+        mutex = kernel32.CreateMutexW(None, False, "Global\\Access_PCI")
+        if not mutex:
+            raise RuntimeError(f"Cannot create PCI mutex (Windows error {ctypes.get_last_error()})")
+        wait_result = kernel32.WaitForSingleObject(mutex, 1000)
+        if wait_result not in (0, 0x80):
+            raise TimeoutError("Timed out waiting for exclusive PCI access")
+
+        request = b"ioctl_read_smn".ljust(32, b"\0") + struct.pack("<q", offset)
+        request_buffer = ctypes.create_string_buffer(request)
+        output = ctypes.c_int64()
+        try:
+            if not kernel32.DeviceIoControl(
+                handle,
+                PAWNIO_EXECUTE,
+                request_buffer,
+                len(request),
+                ctypes.byref(output),
+                ctypes.sizeof(output),
+                ctypes.byref(returned),
+                None,
+            ):
+                raise RuntimeError(
+                    f"PawnIO SMN read failed (Windows error {ctypes.get_last_error()})"
+                )
+        finally:
+            kernel32.ReleaseMutex(mutex)
+        if returned.value != ctypes.sizeof(output):
+            raise RuntimeError(f"PawnIO returned an unexpected {returned.value}-byte result")
+        return output.value & 0xFFFFFFFF
     finally:
-        mapping.close()
+        if mutex:
+            kernel32.CloseHandle(mutex)
+        kernel32.CloseHandle(handle)
 
-    reading_count = data.core_count * data.cpu_count
-    if not 0 < reading_count <= len(data.temps):
-        raise RuntimeError("Core Temp is not running or its shared data is unavailable")
 
-    temperatures = [float(value) for value in data.temps[:reading_count]]
-    if data.delta_to_tjmax:
-        temperatures = [
-            float(data.tjmax[index // data.core_count]) - value
-            for index, value in enumerate(temperatures)
-        ]
-    if data.fahrenheit:
-        temperatures = [(value - 32.0) * 5.0 / 9.0 for value in temperatures]
-
-    celsius = max(temperatures)
+def read_ryzen_temperature() -> tuple[float, str]:
+    raw = _read_ryzen_smn(RYZEN_THERMAL_REGISTER)
+    celsius = (raw >> 21) * 0.125
+    if raw & (1 << 19) or (raw & (3 << 16)) == (3 << 16):
+        celsius -= 49.0
     if not 0 <= celsius <= 120:
-        raise RuntimeError(f"Implausible Core Temp reading: {celsius:.1f} C")
-    cpu_name = data.cpu_name.decode(errors="replace").rstrip("\0 ")
-    return celsius, f"Core Temp ({cpu_name})"
+        raise RuntimeError(f"Implausible Ryzen SMN temperature: {celsius:.1f} C")
+    return celsius, "PawnIO AMD SMN (Tctl/Tdie)"
 
 
 def read_nvidia_temperature() -> tuple[float, str]:
@@ -111,6 +172,6 @@ def read_nvidia_temperature() -> tuple[float, str]:
 
 
 def read_temperatures() -> Temperatures:
-    cpu_c, cpu_source = read_core_temp_temperature()
+    cpu_c, cpu_source = read_ryzen_temperature()
     gpu_c, gpu_source = read_nvidia_temperature()
     return Temperatures(cpu_c, gpu_c, cpu_source, gpu_source)

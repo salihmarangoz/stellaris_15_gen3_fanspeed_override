@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0"
-start "" ".venv\Scripts\pythonw.exe" "fan_control_gui.py"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0launch_fan_control.ps1"
