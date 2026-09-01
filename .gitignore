@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.py[cod]
+fan-backups/
+build/
+dist/
+*.spec
