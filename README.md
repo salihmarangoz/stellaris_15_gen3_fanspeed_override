@@ -8,6 +8,8 @@ An experimental fan-control application for my Stellaris 15 Gen3 laptop, designe
 > [!WARNING]
 > This project can interfere with the installed OEM fan-control application or its configuration. After custom curves are written, the Control Center GUI may display unusual curves, incorrect-looking values, broken layouts, or other unexpected behavior. Recovery may require restoring a backup, resetting Control Center, or reinstalling it. This project does not intentionally modify OEM program files, but it does change the fan data consumed by that software.
 
+![Stellaris 15 Gen3 Fan Control interface](assets/ss.png)
+
 ## Why I Built This
 
 The embedded-controller path on my laptop stopped providing a reliable CPU temperature. As a result, the original fan curve could leave the system undercooled while the CPU temperature increased.

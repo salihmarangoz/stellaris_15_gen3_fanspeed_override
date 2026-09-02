@@ -17,7 +17,8 @@ Last reviewed: 2026-09-02
 |-- THIRD_PARTY_NOTICES.md       pinned dependency provenance and licenses
 |-- assets\
 |   |-- stellaris-fan-control.png transparent application/tray icon source
-|   `-- stellaris-fan-control.ico Windows executable icon
+|   |-- stellaris-fan-control.ico Windows executable icon
+|   `-- ss.png                    README interface screenshot
 |-- stellaris15gen3.py           elevated single-process packaged entry point
 |-- stellaris15gen3_frontend.py  normal-user frontend application entry point
 |-- stellaris15gen3_backend.py   elevated backend application entry point
