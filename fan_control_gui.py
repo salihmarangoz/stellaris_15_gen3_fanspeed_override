@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSlider,
     QSpinBox,
-    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -336,21 +335,9 @@ class FanControlWindow(QMainWindow):
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(18)
 
-        heading_row = QHBoxLayout()
         heading = QLabel("Fan Control")
         heading.setObjectName("heading")
-        heading_row.addWidget(heading)
-        heading_row.addStretch()
-
-        self.refresh_button = QPushButton()
-        self.refresh_button.setObjectName("iconButton")
-        self.refresh_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
-        )
-        self.refresh_button.setToolTip("Refresh fan state")
-        self.refresh_button.clicked.connect(self.load_state)
-        heading_row.addWidget(self.refresh_button)
-        layout.addLayout(heading_row)
+        layout.addWidget(heading)
 
         self.connection_label = QLabel(self._status_message)
         self.connection_label.setObjectName("statusText")
@@ -642,11 +629,6 @@ class FanControlWindow(QMainWindow):
             QPushButton#primaryButton:hover {
                 background: #34c8a8;
             }
-            QPushButton#iconButton {
-                min-width: 38px;
-                max-width: 38px;
-                padding: 0;
-            }
             QPushButton:disabled, QSpinBox:disabled, QSlider:disabled {
                 color: #727980;
                 background: #24272a;
@@ -660,7 +642,6 @@ class FanControlWindow(QMainWindow):
 
     def _set_busy(self, busy: bool, message: str | None = None) -> None:
         self._busy = busy
-        self.refresh_button.setEnabled(not busy)
         self.boost_button.setEnabled(not busy)
         self.mode_toggle.setEnabled(not busy)
         self._update_mode_panels()
