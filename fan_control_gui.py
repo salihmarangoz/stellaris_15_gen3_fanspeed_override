@@ -2,6 +2,7 @@ import sys
 import time
 import traceback
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, Signal
@@ -26,7 +27,8 @@ from fan_control_service import ControlCenterService
 from temperature_service import Temperatures, read_temperatures
 
 
-INSTANCE_SERVER_NAME = "blabla.fan-control"
+INSTANCE_SERVER_NAME = "stellaris15gen3.fan-control"
+STYLESHEET_NAME = "stellaris15gen3.css"
 AUTO_INTERVAL_MS = 15000
 DEFAULT_MIN_FAN_TEMP = 40
 DEFAULT_MAX_FAN_TEMP = 80
@@ -178,8 +180,8 @@ class SensorGauge(QWidget):
 class DisabledPanelOverlay(QWidget):
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
+        self.setObjectName("disabledPanelOverlay")
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setStyleSheet("background: transparent;")
 
     def paintEvent(self, event: object) -> None:
         del event
@@ -538,103 +540,11 @@ class FanControlWindow(QMainWindow):
         return slider, spin
 
     def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
-            QMainWindow, QWidget {
-                background: #17191c;
-                color: #eef1f3;
-            }
-            QLabel#heading {
-                font-size: 24px;
-                font-weight: 650;
-            }
-            QLabel#statusText, QLabel#reportedValue {
-                color: #aeb6bd;
-            }
-            QLabel#fanName {
-                font-size: 15px;
-                font-weight: 600;
-            }
-            QLabel#sectionTitle {
-                font-size: 18px;
-                font-weight: 650;
-            }
-            QLabel#temperatureValue {
-                font-size: 19px;
-                font-weight: 650;
-            }
-            QLabel#warningText {
-                color: #e4b45d;
-                font-size: 12px;
-            }
-            QFrame#divider {
-                color: #34393e;
-            }
-            QFrame#panel {
-                background: #1d2024;
-                border: 1px solid #34393e;
-                border-radius: 7px;
-            }
-            QFrame#panel QLabel {
-                background: transparent;
-                border: none;
-            }
-            QSlider {
-                min-height: 34px;
-            }
-            QSlider::groove:horizontal {
-                height: 6px;
-                background: #34393e;
-                border-radius: 3px;
-            }
-            QSlider::sub-page:horizontal {
-                background: #25b99a;
-                border-radius: 3px;
-            }
-            QSlider::handle:horizontal {
-                width: 18px;
-                margin: -6px 0;
-                background: #f4f7f8;
-                border: 2px solid #25b99a;
-                border-radius: 9px;
-            }
-            QSpinBox {
-                min-height: 34px;
-                padding: 0 8px;
-                background: #22262a;
-                border: 1px solid #444b51;
-                border-radius: 5px;
-            }
-            QPushButton {
-                min-height: 36px;
-                padding: 0 14px;
-                background: #292e33;
-                border: 1px solid #454c52;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background: #343a40;
-            }
-            QPushButton:checked {
-                color: #17191c;
-                background: #e4b45d;
-                border-color: #e4b45d;
-            }
-            QPushButton#primaryButton {
-                color: #07130f;
-                background: #25b99a;
-                border-color: #25b99a;
-                font-weight: 650;
-            }
-            QPushButton#primaryButton:hover {
-                background: #34c8a8;
-            }
-            QPushButton:disabled, QSpinBox:disabled, QSlider:disabled {
-                color: #727980;
-                background: #24272a;
-            }
-            """
-        )
+        if hasattr(sys, "_MEIPASS"):
+            stylesheet_path = Path(sys._MEIPASS) / STYLESHEET_NAME
+        else:
+            stylesheet_path = Path(__file__).resolve().with_name(STYLESHEET_NAME)
+        self.setStyleSheet(stylesheet_path.read_text(encoding="utf-8"))
 
     def _mark_dirty(self) -> None:
         if not self._syncing:

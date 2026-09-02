@@ -4,6 +4,7 @@ $root = $PSScriptRoot
 $venv = Join-Path $root '.venv'
 $python = Join-Path $venv 'Scripts\python.exe'
 $pawnModule = Join-Path $root 'third_party\pawnio\AMDFamily17.bin'
+$styleSheet = Join-Path $root 'stellaris15gen3.css'
 
 if (-not (Test-Path -LiteralPath $python)) {
     py -3 -m venv $venv
@@ -31,6 +32,7 @@ try {
         --windowed `
         --uac-admin `
         --add-data "$pawnModule;pawnio" `
+        --add-data "$styleSheet;." `
         --name StellarisFanControl `
         (Join-Path $root 'fan_control_gui.py')
     if ($LASTEXITCODE -ne 0) {
