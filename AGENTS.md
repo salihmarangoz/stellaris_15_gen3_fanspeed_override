@@ -28,8 +28,9 @@ This repository contains experimental, hardware-specific fan control for a Stell
 - `frontend/stellaris15gen3.css`: the complete frontend stylesheet.
 - `stellaris15gen3.py`: source and packaged process-role launcher.
 - `backend/fan_control_probe.py`: read-only MQTT diagnostic utility.
-- `setup_pawnio.ps1`: installs PawnIO and downloads the pinned, hash-verified AMD module.
-- `build_exe.ps1`: reproducible PyInstaller entry point.
+- `scripts/setup_pawnio.ps1`: installs PawnIO and downloads the pinned, hash-verified AMD module.
+- `scripts/build_exe.ps1`: reproducible PyInstaller entry point.
+- `scripts/launch_fan_control.ps1` and `scripts/run_fan_control_gui.cmd`: source launchers.
 
 Keep protocol, service ownership, sensor acquisition, and presentation in these existing boundaries unless a change clearly requires otherwise.
 
@@ -52,7 +53,7 @@ Keep protocol, service ownership, sensor acquisition, and presentation in these 
 - Decode bits 31:21 in 0.125 C units and apply the 49 C range adjustment when the range/Tj selector flags indicate it.
 - Use the global `Access_PCI` mutex around the SMN operation.
 - PawnIO access requires administrator rights. Only the backend may run elevated; source and packaged frontends must remain at normal user integrity. An elevated backend must launch frontend replacements through the non-elevated Windows shell.
-- The AMD module URL, commit, and SHA-256 in `setup_pawnio.ps1` are a supply-chain boundary. Do not update them without validating the new module on the target laptop and updating `THIRD_PARTY_NOTICES.md`.
+- The AMD module URL, commit, and SHA-256 in `scripts/setup_pawnio.ps1` are a supply-chain boundary. Do not update them without validating the new module on the target laptop and updating `THIRD_PARTY_NOTICES.md`.
 - Do not reintroduce Core Temp, ACPI thermal-zone fallback, WinRing0, or a Control Center temperature fallback without explicit user direction and hardware validation.
 
 ## Development and verification
@@ -68,7 +69,7 @@ For GUI-only checks, use Qt's offscreen platform and avoid selecting Auto. Read-
 Build locally with:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\build_exe.ps1
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\build_exe.ps1
 ```
 
 After packaging, verify that the window opens, remains responsive, and a second launch activates the existing instance. Do not select Auto during packaging smoke tests unless a live fan write was explicitly authorized.

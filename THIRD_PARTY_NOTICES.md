@@ -10,7 +10,7 @@ PawnIO provides the signed kernel driver used for restricted hardware access. It
 
 ## AMD Family 17h module
 
-The build downloads `AMDFamily17.bin` from LibreHardwareMonitor commit `75e0106f1af4fbdc0cb5d95ca32dc15f8ab070d7`. The expected SHA-256 is `DAE74615761B78BDF064DFB3E136252DDCC6FC727D88F14738D0E5800D427A91`. It is bundled into local executable builds but ignored by Git.
+The build setup in `scripts/setup_pawnio.ps1` downloads `AMDFamily17.bin` from LibreHardwareMonitor commit `75e0106f1af4fbdc0cb5d95ca32dc15f8ab070d7`. The expected SHA-256 is `DAE74615761B78BDF064DFB3E136252DDCC6FC727D88F14738D0E5800D427A91`. It is bundled into local executable builds but ignored by Git.
 
 - Binary source: <https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/blob/75e0106f1af4fbdc0cb5d95ca32dc15f8ab070d7/LibreHardwareMonitorLib/Resources/PawnIo/AMDFamily17.bin>
 - Module source: <https://github.com/namazso/PawnIO.Modules/blob/main/AMDFamily17.p>

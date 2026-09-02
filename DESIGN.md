@@ -79,6 +79,7 @@ All styling lives in `frontend/stellaris15gen3.css`; Python code supplies struct
 | 2026-09-02T12:39:47+03:00 | Split the frontend and backend into supervised processes. | Automatic control can continue without PySide6, and either side can recover the other with cooldown protection. |
 | 2026-09-02T12:46:54+03:00 | Elevate only the backend. | The GUI has no hardware-access reason to run as administrator; packaged builds therefore have no global admin manifest. |
 | 2026-09-02T12:54:38+03:00 | Put frontend, backend, shared code, and tests in explicit packages. | Filesystem boundaries now match process and dependency boundaries; frontend and backend dependencies can be inspected separately. |
+| 2026-09-02T12:59:04+03:00 | Keep operational PowerShell and command scripts under `scripts/`. | The repository root stays focused on application entry points, dependency manifests, and project documentation. |
 
 ## Ideas under consideration
 

@@ -37,10 +37,11 @@ Last reviewed: 2026-09-02
 |   |-- __init__.py              test package marker
 |   `-- test_fan_control_backend.py
 |                                pure/mocked backend, safety, and IPC tests
-|-- launch_fan_control.ps1       source setup and normal-user launcher
-|-- run_fan_control_gui.cmd      command-shell entry point
-|-- setup_pawnio.ps1             pinned PawnIO setup and module verification
-|-- build_exe.ps1                reproducible PyInstaller build entry point
+|-- scripts\
+|   |-- launch_fan_control.ps1   source setup and normal-user launcher
+|   |-- run_fan_control_gui.cmd  command-shell entry point
+|   |-- setup_pawnio.ps1         pinned PawnIO setup and module verification
+|   `-- build_exe.ps1            reproducible PyInstaller build entry point
 |-- requirements.txt             source/runtime Python dependencies
 |-- requirements-build.txt       packaging dependencies
 `-- .gitignore                   generated and local-only exclusions
@@ -87,4 +88,4 @@ dist\
 third_party\pawnio\AMDFamily17.bin
 ```
 
-`build_exe.ps1` produces `dist\StellarisFanControl.exe`. PyInstaller embeds `frontend\stellaris15gen3.css` and the hash-verified AMD PawnIO module. The PawnIO driver and OEM Control Center remain external system dependencies.
+`scripts\build_exe.ps1` produces `dist\StellarisFanControl.exe`. PyInstaller embeds `frontend\stellaris15gen3.css` and the hash-verified AMD PawnIO module. The PawnIO driver and OEM Control Center remain external system dependencies.

@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$root = $PSScriptRoot
+$root = Split-Path -Parent $PSScriptRoot
 $venv = Join-Path $root '.venv'
 $python = Join-Path $venv 'Scripts\python.exe'
 $pawnModule = Join-Path $root 'third_party\pawnio\AMDFamily17.bin'
@@ -13,7 +13,7 @@ if (-not (Test-Path -LiteralPath $python)) {
     }
 }
 
-& (Join-Path $root 'setup_pawnio.ps1')
+& (Join-Path $PSScriptRoot 'setup_pawnio.ps1')
 
 Push-Location $root
 try {

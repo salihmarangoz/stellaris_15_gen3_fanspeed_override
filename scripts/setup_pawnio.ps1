@@ -2,7 +2,8 @@ $ErrorActionPreference = 'Stop'
 
 $commit = '75e0106f1af4fbdc0cb5d95ca32dc15f8ab070d7'
 $expectedHash = 'DAE74615761B78BDF064DFB3E136252DDCC6FC727D88F14738D0E5800D427A91'
-$moduleDirectory = Join-Path $PSScriptRoot 'third_party\pawnio'
+$root = Split-Path -Parent $PSScriptRoot
+$moduleDirectory = Join-Path $root 'third_party\pawnio'
 $modulePath = Join-Path $moduleDirectory 'AMDFamily17.bin'
 $moduleUrl = "https://raw.githubusercontent.com/LibreHardwareMonitor/LibreHardwareMonitor/$commit/LibreHardwareMonitorLib/Resources/PawnIo/AMDFamily17.bin"
 
