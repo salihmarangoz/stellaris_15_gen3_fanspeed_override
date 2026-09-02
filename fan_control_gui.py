@@ -94,6 +94,39 @@ class FanCurveGraph(QWidget):
             painter.drawEllipse(x - 4, y - 4, 8, 8)
 
 
+class DisabledPanelOverlay(QWidget):
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setStyleSheet("background: transparent;")
+
+    def paintEvent(self, event: object) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(115, 120, 125, 105))
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 7, 7)
+
+
+class ControlPanel(QFrame):
+    def __init__(self) -> None:
+        super().__init__()
+        self._disabled_overlay = DisabledPanelOverlay(self)
+        self._disabled_overlay.hide()
+
+    def setEnabled(self, enabled: bool) -> None:
+        super().setEnabled(enabled)
+        self._disabled_overlay.setVisible(not enabled)
+        if not enabled:
+            self._disabled_overlay.raise_()
+
+    def resizeEvent(self, event: object) -> None:
+        self._disabled_overlay.setGeometry(self.rect())
+        self._disabled_overlay.raise_()
+        super().resizeEvent(event)
+
+
 class WorkerSignals(QObject):
     completed = Signal(object)
     failed = Signal(str)
@@ -217,7 +250,7 @@ class FanControlWindow(QMainWindow):
         columns.setSpacing(14)
         layout.addLayout(columns, 1)
 
-        self.auto_panel = QFrame()
+        self.auto_panel = ControlPanel()
         self.auto_panel.setObjectName("panel")
         auto_layout = QVBoxLayout(self.auto_panel)
         auto_layout.setContentsMargins(18, 18, 18, 18)
@@ -256,7 +289,7 @@ class FanControlWindow(QMainWindow):
         auto_layout.addWidget(self.auto_target_label)
         columns.addWidget(self.auto_panel, 1)
 
-        self.manual_panel = QFrame()
+        self.manual_panel = ControlPanel()
         self.manual_panel.setObjectName("panel")
         manual_layout = QVBoxLayout(self.manual_panel)
         manual_layout.setContentsMargins(18, 18, 18, 18)
