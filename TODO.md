@@ -8,7 +8,7 @@ Automatic mode currently fails closed and performs no new write when either temp
 
 ## HIGH - Smoke-test the packaged privilege split
 
-Build the current package and verify on Windows that the frontend stays at normal-user integrity, only the backend shows UAC, backend recovery also shows UAC, and an elevated backend restarts a non-elevated frontend. Also verify that canceling UAC produces a useful frontend state instead of a silent failure. Do not select Automatic or perform a live write during this test.
+Build the two applications and verify on Windows that the frontend stays at normal-user integrity, only the backend shows UAC, backend recovery also shows UAC, and the elevated backend restarts the sibling frontend executable without elevation. Also verify that canceling UAC produces a useful frontend state instead of a silent failure. Do not select Automatic or perform a live write during this test.
 
 ## HIGH - Test frontend and backend crash recovery end to end
 

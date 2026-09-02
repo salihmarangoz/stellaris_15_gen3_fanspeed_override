@@ -15,6 +15,14 @@ FRONTEND_HEARTBEAT_TIMEOUT_SECONDS = 45.0
 MAX_MESSAGE_BYTES = 64 * 1024
 APP_DIRECTORY_NAME = "StellarisFanControl"
 ENDPOINT_FILENAME = "backend-endpoint.json"
+COMPONENT_EXECUTABLES = {
+    "frontend": "StellarisFanControlFrontend.exe",
+    "backend": "StellarisFanControlBackend.exe",
+}
+COMPONENT_ENTRY_POINTS = {
+    "frontend": "stellaris15gen3_frontend.py",
+    "backend": "stellaris15gen3_backend.py",
+}
 
 
 class BackendUnavailable(RuntimeError):
@@ -42,17 +50,19 @@ def application_directory() -> Path:
 
 
 def component_command(role: str, *extra_arguments: str) -> list[str]:
-    role_argument = f"--{role}"
+    if role not in COMPONENT_EXECUTABLES:
+        raise ValueError(f"Unknown application component: {role}")
     if getattr(sys, "frozen", False):
-        return [sys.executable, role_argument, *extra_arguments]
+        executable = application_directory() / COMPONENT_EXECUTABLES[role]
+        return [str(executable), *extra_arguments]
 
     python = Path(sys.executable)
     if os.name == "nt":
         pythonw = python.with_name("pythonw.exe")
         if pythonw.exists():
             python = pythonw
-    launcher = application_directory() / "stellaris15gen3.py"
-    return [str(python), str(launcher), role_argument, *extra_arguments]
+    entry_point = application_directory() / COMPONENT_ENTRY_POINTS[role]
+    return [str(python), str(entry_point), *extra_arguments]
 
 
 def is_administrator() -> bool:

@@ -30,16 +30,28 @@ try {
         --clean `
         --onefile `
         --windowed `
-        --add-data "$pawnModule;pawnio" `
         --add-data "$styleSheet;frontend" `
-        --name StellarisFanControl `
-        (Join-Path $root 'stellaris15gen3.py')
+        --name StellarisFanControlFrontend `
+        (Join-Path $root 'stellaris15gen3_frontend.py')
     if ($LASTEXITCODE -ne 0) {
-        throw "PyInstaller failed with exit code $LASTEXITCODE"
+        throw "Frontend PyInstaller build failed with exit code $LASTEXITCODE"
+    }
+    & $python -m PyInstaller `
+        --noconfirm `
+        --clean `
+        --onefile `
+        --windowed `
+        --uac-admin `
+        --add-data "$pawnModule;pawnio" `
+        --name StellarisFanControlBackend `
+        (Join-Path $root 'stellaris15gen3_backend.py')
+    if ($LASTEXITCODE -ne 0) {
+        throw "Backend PyInstaller build failed with exit code $LASTEXITCODE"
     }
 }
 finally {
     Pop-Location
 }
 
-Write-Host "Built: $(Join-Path $root 'dist\StellarisFanControl.exe')"
+Write-Host "Built frontend: $(Join-Path $root 'dist\StellarisFanControlFrontend.exe')"
+Write-Host "Built backend:  $(Join-Path $root 'dist\StellarisFanControlBackend.exe')"

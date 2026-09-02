@@ -34,7 +34,7 @@ ControlCenterService ----> one persistent OEM MQTT client
 
 The backend owns the safety-critical state, automatic scheduler, temperature reads, and the only `ControlCenterService`. The frontend owns presentation and user confirmation. Backend validation is still authoritative because a UI check alone is not a security or safety boundary.
 
-The frontend launches or recovers the backend with Windows `runas`. The elevated backend launches or recovers the frontend through the normal Windows shell so PySide6 never needs administrator privileges. Both restart directions use a 60-second cooldown.
+The frontend and backend are packaged as separate sibling executables. The frontend launches or recovers the backend with Windows `runas`, and the backend executable also carries an administrator manifest as a defense-in-depth packaging boundary. The elevated backend launches or recovers the separate frontend executable through the normal Windows shell so PySide6 never inherits administrator privileges. Both restart directions use a 60-second cooldown.
 
 ## Automatic-control design
 
@@ -55,7 +55,7 @@ Entering Automatic mode creates one backup before the first write. Later 15-seco
 
 ## IPC design
 
-The backend binds an ephemeral IPv4 loopback port and writes its host, port, and random token to `%LOCALAPPDATA%\StellarisFanControl\backend-endpoint.json`. Requests and responses are newline-delimited JSON with a 64 KiB limit.
+The backend binds an ephemeral IPv4 loopback port and writes its host, port, and random token to `%LOCALAPPDATA%\StellarisFanControl\backend-endpoint.json`. Requests and responses are newline-delimited JSON with a 64 KiB limit. Application control does not use MQTT; the OEM MQTT connection is a hardware-specific implementation detail owned exclusively by the backend.
 
 Current commands are `ping`, `load_state`, `read_telemetry`, `apply_manual`, `set_boost`, `set_mode`, `configure_auto`, `frontend_heartbeat`, `frontend_detach`, and `show_frontend`.
 
@@ -80,6 +80,7 @@ All styling lives in `frontend/stellaris15gen3.css`; Python code supplies struct
 | 2026-09-02T12:46:54+03:00 | Elevate only the backend. | The GUI has no hardware-access reason to run as administrator; packaged builds therefore have no global admin manifest. |
 | 2026-09-02T12:54:38+03:00 | Put frontend, backend, shared code, and tests in explicit packages. | Filesystem boundaries now match process and dependency boundaries; frontend and backend dependencies can be inspected separately. |
 | 2026-09-02T12:59:04+03:00 | Keep operational PowerShell and command scripts under `scripts/`. | The repository root stays focused on application entry points, dependency manifests, and project documentation. |
+| 2026-09-02 | Package the frontend and backend as separate executables and keep control IPC on authenticated loopback TCP. | Separate manifests make the privilege boundary visible and enforceable; avoiding MQTT keeps UI commands independent from the reverse-engineered OEM broker. |
 
 ## Ideas under consideration
 

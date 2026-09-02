@@ -15,7 +15,8 @@ Last reviewed: 2026-09-02
 |-- ACCIDENTS.md                 factual important-incident records
 |-- TODO.md                      prioritized open debt, problems, and work
 |-- THIRD_PARTY_NOTICES.md       pinned dependency provenance and licenses
-|-- stellaris15gen3.py           packaged/source role launcher
+|-- stellaris15gen3_frontend.py  normal-user frontend application entry point
+|-- stellaris15gen3_backend.py   elevated backend application entry point
 |-- frontend\
 |   |-- __init__.py              frontend package marker
 |   |-- fan_control_gui.py       normal-user PySide6 frontend
@@ -50,14 +51,14 @@ Last reviewed: 2026-09-02
 ## Dependency direction
 
 ```text
-stellaris15gen3.py
-|-- frontend role -> frontend/fan_control_gui.py
-|                    `-- shared/{fan_control_common,fan_control_ipc}.py
-`-- backend role  -> backend/fan_control_backend.py
-                    |-- shared/{fan_control_common,fan_control_ipc}.py
-                    |-- backend/temperature_service.py
-                    `-- backend/fan_control_service.py
-                         `-- backend/fan_control.py
+stellaris15gen3_frontend.py -> frontend/fan_control_gui.py
+                              `-- shared/{fan_control_common,fan_control_ipc}.py
+
+stellaris15gen3_backend.py  -> backend/fan_control_backend.py
+                              |-- shared/{fan_control_common,fan_control_ipc}.py
+                              |-- backend/temperature_service.py
+                              `-- backend/fan_control_service.py
+                                   `-- backend/fan_control.py
 ```
 
 `backend/temperature_service.py` must remain independent of `backend/fan_control_service.py` and the OEM Control Center. `frontend/fan_control_gui.py` must not import the `backend` package. `shared/fan_control_common.py` stays pure so curve behavior can be tested without Qt, MQTT, PawnIO, NVIDIA, or administrator access. Shared code must not import either process package.
@@ -88,4 +89,4 @@ dist\
 third_party\pawnio\AMDFamily17.bin
 ```
 
-`scripts\build_exe.ps1` produces `dist\StellarisFanControl.exe`. PyInstaller embeds `frontend\stellaris15gen3.css` and the hash-verified AMD PawnIO module. The PawnIO driver and OEM Control Center remain external system dependencies.
+`scripts\build_exe.ps1` produces sibling `dist\StellarisFanControlFrontend.exe` and `dist\StellarisFanControlBackend.exe` applications. The frontend embeds `frontend\stellaris15gen3.css`; the backend embeds the hash-verified AMD PawnIO module and carries an administrator manifest. The PawnIO driver and OEM Control Center remain external system dependencies.

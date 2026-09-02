@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import threading
 import unittest
 from pathlib import Path
@@ -112,6 +113,31 @@ class BackendSafetyTests(unittest.TestCase):
 
 
 class IpcTests(unittest.TestCase):
+    def test_frozen_components_are_separate_sibling_executables(self) -> None:
+        with (
+            patch("shared.fan_control_ipc.sys.frozen", True, create=True),
+            patch(
+                "shared.fan_control_ipc.sys.executable",
+                str(Path("C:/FanControl/StellarisFanControlFrontend.exe")),
+            ),
+        ):
+            frontend = component_command("frontend")
+            backend = component_command("backend", "--no-frontend")
+        self.assertEqual(
+            Path(frontend[0]).name, "StellarisFanControlFrontend.exe"
+        )
+        self.assertEqual(
+            Path(backend[0]).name, "StellarisFanControlBackend.exe"
+        )
+        self.assertEqual(backend[1:], ["--no-frontend"])
+
+    def test_source_components_use_separate_entry_points(self) -> None:
+        with patch.object(sys, "frozen", False, create=True):
+            frontend = component_command("frontend")
+            backend = component_command("backend")
+        self.assertEqual(Path(frontend[1]).name, "stellaris15gen3_frontend.py")
+        self.assertEqual(Path(backend[1]).name, "stellaris15gen3_backend.py")
+
     def test_normal_frontend_requests_an_elevated_backend(self) -> None:
         expected = component_command("backend", "--no-frontend")
         with (

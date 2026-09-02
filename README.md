@@ -48,16 +48,16 @@ The inactive control section is disabled and visually dimmed. Sensor gauges and 
 
 ## Frontend and Backend
 
-The application uses separate supervised processes:
+The application uses two separate supervised applications:
 
-- The frontend runs without administrator privileges and contains the PySide6 interface.
-- The backend runs with administrator privileges and owns sensor access, automatic scheduling, and fan-control communication.
+- `StellarisFanControlFrontend.exe` runs without administrator privileges and contains the PySide6 interface.
+- `StellarisFanControlBackend.exe` is a windowless background application with an administrator manifest. It owns sensor access, automatic scheduling, and fan-control communication.
 
 If the frontend crashes or PySide6 cannot start, the backend keeps Automatic mode running and attempts to restart a non-administrator frontend. If the backend crashes, the frontend requests an elevated replacement and restores the selected mode after reconnection.
 
 Both restart directions use a 60-second cooldown to prevent rapid crash loops. Closing the frontend normally detaches it from the watchdog, while the backend remains active.
 
-The processes communicate through an authenticated loopback connection. The backend endpoint and random token are stored under `%LOCALAPPDATA%\StellarisFanControl` for the current user.
+The applications communicate through a bounded, authenticated loopback TCP connection. This control protocol deliberately does not reuse the OEM MQTT broker: MQTT remains private to the backend's Control Center integration. The backend endpoint and random token are stored under `%LOCALAPPDATA%\StellarisFanControl` for the current user.
 
 ## Requirements
 
@@ -90,15 +90,18 @@ Write commands are dry runs unless `--apply` is supplied:
 
 Inspect the preview before adding `--apply`. Manual writes create a backup of the active curve first. Source backups are stored in `fan-backups`; packaged builds use `%LOCALAPPDATA%\StellarisFanControl\fan-backups`.
 
-## Build the Executable
+## Build the Applications
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File .\scripts\build_exe.ps1
 ```
 
-The script creates the virtual environment when necessary, prepares PawnIO, installs the build requirements, and writes `dist\StellarisFanControl.exe`. The AMD sensor module and `frontend\stellaris15gen3.css` are embedded in the executable. The signed PawnIO driver and OEM Control Center remain separate system dependencies.
+The script creates the virtual environment when necessary, prepares PawnIO, installs the build requirements, and writes these sibling applications:
 
-The executable has no global administrator manifest, so the frontend remains non-elevated. Windows requests administrator access when the executable starts its backend role. Generated executables, PyInstaller files, downloaded modules, virtual environments, caches, and fan backups are excluded from Git.
+- `dist\StellarisFanControlFrontend.exe`, with no administrator manifest and with the stylesheet embedded.
+- `dist\StellarisFanControlBackend.exe`, a windowless application with an administrator manifest and the AMD sensor module embedded.
+
+Keep both files in the same directory. Start the frontend normally; it requests elevation only when launching the backend. Generated executables, PyInstaller files, downloaded modules, virtual environments, caches, and fan backups are excluded from Git.
 
 ## Recovery
 

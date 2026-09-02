@@ -26,7 +26,8 @@ This repository contains experimental, hardware-specific fan control for a Stell
 - `shared/fan_control_common.py`: pure automatic-curve constants and calculation shared by the two processes.
 - `frontend/fan_control_gui.py`: PySide6 frontend, display timers, worker lifecycle, backend watchdog, and single-GUI enforcement.
 - `frontend/stellaris15gen3.css`: the complete frontend stylesheet.
-- `stellaris15gen3.py`: source and packaged process-role launcher.
+- `stellaris15gen3_frontend.py`: source and packaged normal-user frontend entry point.
+- `stellaris15gen3_backend.py`: source and packaged elevated background-backend entry point.
 - `backend/fan_control_probe.py`: read-only MQTT diagnostic utility.
 - `scripts/setup_pawnio.ps1`: installs PawnIO and downloads the pinned, hash-verified AMD module.
 - `scripts/build_exe.ps1`: reproducible PyInstaller entry point.
@@ -61,7 +62,7 @@ Keep protocol, service ownership, sensor acquisition, and presentation in these 
 Use the existing virtual environment when available:
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile backend\fan_control.py backend\fan_control_backend.py backend\fan_control_service.py backend\temperature_service.py frontend\fan_control_gui.py shared\fan_control_common.py shared\fan_control_ipc.py stellaris15gen3.py
+.\.venv\Scripts\python.exe -m py_compile backend\fan_control.py backend\fan_control_backend.py backend\fan_control_service.py backend\temperature_service.py frontend\fan_control_gui.py shared\fan_control_common.py shared\fan_control_ipc.py stellaris15gen3_frontend.py stellaris15gen3_backend.py
 ```
 
 For GUI-only checks, use Qt's offscreen platform and avoid selecting Auto. Read-only live temperature checks require an elevated process and PawnIO. Clearly report when a check was not run because elevation or the target hardware was unavailable.
