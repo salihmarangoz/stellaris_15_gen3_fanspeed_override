@@ -1,44 +1,57 @@
-# Stellaris 15 Gen3 Fan Speed Override
+# Stellaris 15 Gen3 fan control
 
 > [!CAUTION]
-> This is experimental, hardware-specific fan-control software. It directly replaces the OEM fan curve through the Control Center service. It has **not been tested thoroughly**, is **not recommended for general use**, and may cause overheating, instability, hardware damage, or data loss. Use it entirely at your own risk. Keep an independent temperature monitor open and be ready to enable the OEM Fan Boost mode or shut the laptop down.
+> i made this for my own Stellaris 15 Gen3 laptop and it is still experimental. it directly replaces fan curves through the installed OEM Control Center service. a bug, a bad sensor value, or an incompatible laptop can cause overheating, instability, hardware damage, or data loss. use it at your own risk. keep another temperature monitor open and be ready to use the OEM Fan Boost button or shut the laptop down.
 
-## Why this exists
+> [!WARNING]
+> this project can also mess up the already installed OEM fan-control app or its configuration. the Control Center GUI may start showing weird fan curves, wrong-looking values, broken layouts, or other strange behavior after custom curves are written. in the worst case you may need to restore a backup, reset Control Center, or reinstall it. this project does not intentionally patch the OEM program files, but it does change the fan data that program uses.
 
-The embedded controller (EC) in the author's laptop stopped receiving a correct CPU temperature. The OEM curve consequently allowed the machine to overheat. This project provides an alternative manual and temperature-driven way to set the CPU and GPU fan duties.
+## why i made this
 
-The project was developed for one Stellaris 15 Gen3 / XMG-Uniwill-style system running OEM Control Center 3.9.42.1. MQTT actions, curve formats, table names, authentication values, and EC behavior may differ on any other machine or Control Center release.
+the embedded controller on my laptop stopped getting the correct CPU temperature. because of that, the original fan curve could let the laptop overheat.
 
-## How it works
+this app works around that problem. it can set the CPU and GPU fans manually, or control both fans from independent CPU and GPU temperature readings.
 
-- Fan commands are sent to the locally installed OEM Control Center service over its IPv6 loopback MQTT broker.
-- CPU temperature is read directly from the Ryzen thermal SMN register through the signed [PawnIO](https://github.com/namazso/PawnIO) driver and a restricted AMD read module. The broken Control Center CPU temperature is never used.
-- GPU temperature is read from the NVIDIA driver with `nvidia-smi`.
-- Manual mode provides separate CPU and GPU sliders in 5% steps. Values below 30% require confirmation.
-- Auto mode checks temperatures every 15 seconds, uses `max(CPU, GPU)`, and applies one shared duty to both fans. Its 30% and 100% temperature endpoints are adjustable from 0-100 C and default to 40 C and 80 C.
-- Only one GUI and one Control Center communication client can run at a time. Background work is serialized so refreshes cannot build up in a queue or freeze the GUI.
+i built and tested it for one Stellaris 15 Gen3 / XMG-Uniwill-style laptop with OEM Control Center 3.9.42.1. the MQTT messages, table names, curve format, authentication, and EC behavior may be different on another laptop or Control Center version. do not assume it is compatible just because the laptop looks similar.
 
-The automatic curve is linearly interpolated between two adjustable endpoints and rounded to the nearest 5%:
+## how it works
 
-| Default temperature endpoint | Fan duty |
+- fan commands go to the locally installed OEM Control Center service through its IPv6 loopback MQTT broker.
+- CPU temperature comes directly from the Ryzen `Tctl/Tdie` SMN register through the signed [PawnIO](https://github.com/namazso/PawnIO) driver and a restricted AMD module.
+- the broken Control Center CPU temperature is never used for Auto mode.
+- GPU temperature comes from the NVIDIA driver through `nvidia-smi`.
+- Manual mode has separate CPU and GPU fan controls in 5% steps. anything below 30% needs confirmation.
+- Automatic mode checks every 15 seconds, uses the hotter value from `max(CPU, GPU)`, and sends one shared target to both fans.
+- the sensor panel shows CPU/GPU temperature and reported CPU/GPU fan duty gauges.
+- only one GUI and one Control Center client are allowed at a time.
+
+if either temperature is missing, zero, malformed, or not believable, Auto mode stops that cycle before writing a fan target.
+
+## automatic curve
+
+the two temperature points are adjustable from 0 to 100 C:
+
+| default temperature | fan duty |
 | ---: | ---: |
 | 40 C or below | 30% |
 | 80 C or above | 100% |
 
-Auto mode never requests less than 30%. Selecting **Automatic** starts control immediately and repeats it every 15 seconds. Selecting **Manual** stops future automatic updates; use **Apply manual speeds** to write the slider values. The inactive control section is disabled, while sensor values and the OEM Fan Boost fallback remain available.
+the app fills in the values between those points with a straight line and rounds the result to the nearest 5%. Auto mode never asks for less than 30%, and it always asks for 100% at 80 C or above with the default settings.
 
-## Requirements
+selecting **Automatic** starts a cycle immediately and then repeats every 15 seconds. selecting **Manual** stops future automatic cycles. Manual is the default when the app opens.
+
+the inactive section is grayed out. the sensor gauges and OEM **Fan Boost 100%** fallback stay available in both modes.
+
+## requirements
 
 - Windows 11
-- The compatible OEM Control Center service installed and running
-- Python 3.11 or newer for source use
-- The signed PawnIO driver (the included setup script installs it through `winget`)
-- Administrator access when the application starts
-- An NVIDIA GPU and working `nvidia-smi.exe`
+- the compatible OEM Control Center service installed and running
+- Python 3.11 or newer when running from source
+- the signed PawnIO driver
+- administrator access
+- an NVIDIA GPU with a working `nvidia-smi.exe`
 
-If either independent temperature source is unavailable or implausible, the Auto cycle fails before writing a new fan target.
-
-## Run from source
+## run it from source
 
 ```powershell
 py -3 -m venv .venv
@@ -46,9 +59,9 @@ py -3 -m venv .venv
 .\run_fan_control_gui.cmd
 ```
 
-The launcher runs `setup_pawnio.ps1`, which installs PawnIO once and downloads a pinned, SHA-256-verified 10 KB AMD sensor module. It then requests administrator access and starts the GUI. Core Temp is not required.
+the launcher runs `setup_pawnio.ps1`. it installs PawnIO if needed, downloads the pinned and SHA-256-checked AMD sensor module, asks for administrator access, and then starts the GUI. Core Temp is not needed.
 
-The command-line tool defaults to dry-run behavior for writes:
+the command-line write commands are dry runs unless `--apply` is added:
 
 ```powershell
 .\.venv\Scripts\python.exe .\fan_control.py status
@@ -56,27 +69,27 @@ The command-line tool defaults to dry-run behavior for writes:
 .\.venv\Scripts\python.exe .\fan_control.py fixed 65 --gpu-duty 75
 ```
 
-Only add `--apply` after inspecting the preview. Existing fan curves are backed up before manual writes. Source-run backups are stored in `fan-backups`; packaged builds use `%LOCALAPPDATA%\StellarisFanControl\fan-backups`.
+inspect the preview before adding `--apply`. manual writes create a backup of the active curve first. source backups go in `fan-backups`; packaged builds use `%LOCALAPPDATA%\StellarisFanControl\fan-backups`.
 
-## Build the executable
-
-Run PowerShell from the repository root:
+## build the exe
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File .\build_exe.ps1
 ```
 
-The script creates `.venv` if necessary, prepares PawnIO, installs the build dependencies, and produces `dist\StellarisFanControl.exe` as a windowed, single-file executable. The AMD sensor module is bundled, but the signed PawnIO driver and OEM Control Center remain external runtime requirements. The executable contains an administrator manifest and displays one UAC prompt at launch.
+the script creates the virtual environment if needed, prepares PawnIO, installs the build requirements, and writes `dist\StellarisFanControl.exe`. the AMD sensor module and `stellaris15gen3.css` are bundled into the exe. the signed PawnIO driver and OEM Control Center still have to be installed separately.
 
-The executable, PyInstaller work directories, downloaded AMD module, virtual environment, and generated fan backups are ignored by Git and must not be committed.
+the exe asks for administrator access when it starts. generated executables, PyInstaller files, downloaded modules, virtual environments, caches, and fan backups are ignored by git.
 
-## Recovery
+## recovery
 
-Fan curve backups can be restored with the source CLI:
+backups can be previewed and restored with:
 
 ```powershell
 .\.venv\Scripts\python.exe .\fan_control.py restore .\fan-backups\M2T1-TIMESTAMP.json
 .\.venv\Scripts\python.exe .\fan_control.py restore .\fan-backups\M2T1-TIMESTAMP.json --apply
 ```
 
-The first command previews the backup. The second writes it. If temperature rises unexpectedly, enable OEM Fan Boost immediately or shut the machine down rather than relying on this software.
+the first command only shows what would be restored. the second one writes it.
+
+if temperatures climb unexpectedly, do not wait for this app to fix itself. turn on OEM Fan Boost immediately or shut the laptop down.
