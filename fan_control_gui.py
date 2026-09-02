@@ -8,8 +8,8 @@ from PySide6.QtCore import QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, 
 from PySide6.QtGui import QColor, QCloseEvent, QPainter, QPen
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QApplication,
-    QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -209,6 +209,59 @@ class ControlPanel(QFrame):
         super().resizeEvent(event)
 
 
+class ModeToggle(QAbstractButton):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setCheckable(True)
+        self.setChecked(True)
+        self.setFixedSize(220, 40)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAccessibleName("Control mode")
+        self.toggled.connect(self._update_accessibility)
+        self._update_accessibility(self.isChecked())
+
+    def is_manual(self) -> bool:
+        return self.isChecked()
+
+    def _update_accessibility(self, manual: bool) -> None:
+        self.setAccessibleDescription("Manual mode" if manual else "Automatic mode")
+        self.update()
+
+    def paintEvent(self, event: object) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        outer = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        painter.setPen(QPen(QColor("#454c52"), 1))
+        painter.setBrush(QColor("#292e33"))
+        painter.drawRoundedRect(outer, 7, 7)
+
+        half_width = outer.width() / 2
+        active = QRectF(
+            outer.left() + (half_width if self.is_manual() else 0),
+            outer.top(),
+            half_width,
+            outer.height(),
+        )
+        active_color = QColor("#25b99a" if self.isEnabled() else "#727980")
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(active_color)
+        painter.drawRoundedRect(active, 6, 6)
+
+        font = painter.font()
+        font.setBold(True)
+        painter.setFont(font)
+        automatic_rect = QRectF(outer.left(), outer.top(), half_width, outer.height())
+        manual_rect = QRectF(
+            outer.left() + half_width, outer.top(), half_width, outer.height()
+        )
+        painter.setPen(QColor("#07130f") if not self.is_manual() else QColor("#eef1f3"))
+        painter.drawText(automatic_rect, Qt.AlignmentFlag.AlignCenter, "Automatic")
+        painter.setPen(QColor("#07130f") if self.is_manual() else QColor("#eef1f3"))
+        painter.drawText(manual_rect, Qt.AlignmentFlag.AlignCenter, "Manual")
+
+
 class WorkerSignals(QObject):
     completed = Signal(object)
     failed = Signal(str)
@@ -313,18 +366,9 @@ class FanControlWindow(QMainWindow):
         mode_label.setObjectName("fanName")
         mode_row.addWidget(mode_label)
         mode_row.addSpacing(10)
-        self.manual_mode_button = QPushButton("Manual")
-        self.manual_mode_button.setCheckable(True)
-        self.auto_mode_button = QPushButton("Automatic")
-        self.auto_mode_button.setCheckable(True)
-        self.mode_group = QButtonGroup(self)
-        self.mode_group.setExclusive(True)
-        self.mode_group.addButton(self.manual_mode_button, 0)
-        self.mode_group.addButton(self.auto_mode_button, 1)
-        self.mode_group.idClicked.connect(self._mode_changed)
-        self.manual_mode_button.setChecked(True)
-        mode_row.addWidget(self.manual_mode_button)
-        mode_row.addWidget(self.auto_mode_button)
+        self.mode_toggle = ModeToggle()
+        self.mode_toggle.toggled.connect(self._mode_changed)
+        mode_row.addWidget(self.mode_toggle)
         mode_row.addStretch()
         layout.addLayout(mode_row)
 
@@ -618,8 +662,7 @@ class FanControlWindow(QMainWindow):
         self._busy = busy
         self.refresh_button.setEnabled(not busy)
         self.boost_button.setEnabled(not busy)
-        self.manual_mode_button.setEnabled(not busy)
-        self.auto_mode_button.setEnabled(not busy)
+        self.mode_toggle.setEnabled(not busy)
         self._update_mode_panels()
         if message:
             self._set_status(message)
@@ -639,9 +682,9 @@ class FanControlWindow(QMainWindow):
             f"{self._status_message} (last updated {seconds} {unit} ago)"
         )
 
-    def _mode_changed(self, mode_id: int) -> None:
+    def _mode_changed(self, manual: bool) -> None:
         self._update_mode_panels()
-        if mode_id == 1:
+        if not manual:
             self._auto_backup_needed = True
             self._auto_timer.start()
             QTimer.singleShot(0, self.run_auto_cycle)
@@ -651,7 +694,7 @@ class FanControlWindow(QMainWindow):
             QTimer.singleShot(0, self.refresh_telemetry)
 
     def _update_mode_panels(self) -> None:
-        automatic = self.auto_mode_button.isChecked()
+        automatic = not self.mode_toggle.is_manual()
         self.auto_panel.setEnabled(automatic and not self._busy)
         self.manual_panel.setEnabled(not automatic and not self._busy)
 
@@ -741,7 +784,7 @@ class FanControlWindow(QMainWindow):
         if self._busy or self._telemetry_inflight or self._auto_inflight or self._closing:
             return
         self._telemetry_inflight = True
-        read_sensor_values = self.manual_mode_button.isChecked()
+        read_sensor_values = self.mode_toggle.is_manual()
 
         def operation() -> dict[str, Any]:
             result: dict[str, Any] = {
@@ -796,7 +839,7 @@ class FanControlWindow(QMainWindow):
             if duty is not None and not 0 <= duty <= 100:
                 duty = None
             gauge.set_value(duty)
-        if self._table_name and self.manual_mode_button.isChecked():
+        if self._table_name and self.mode_toggle.is_manual():
             self._set_status(
                 f"Connected | Active table: {self._table_name}", updated=True
             )
@@ -872,7 +915,7 @@ class FanControlWindow(QMainWindow):
 
     def run_auto_cycle(self) -> None:
         if (
-            not self.auto_mode_button.isChecked()
+            self.mode_toggle.is_manual()
             or self._busy
             or self._telemetry_inflight
             or self._auto_inflight
