@@ -18,3 +18,9 @@ The build setup in `scripts/setup_pawnio.ps1` downloads `AMDFamily17.bin` from L
 - PawnIO module license: see the PawnIO and PawnIO.Modules repositories
 
 The module is restricted to approved AMD MSR and SMN operations. This application calls only its `ioctl_read_smn` operation for the Ryzen thermal register.
+
+## OEM Control Center direct interface
+
+When the OEM MQTT broker is unavailable, the application loads the locally installed Control Center 3.9.42.1 `ACPIDriverDll.dll` and uses its `ReadEC` and `WriteEC` exports with the installed `UWACPIDriver`. These OEM files are not copied into or distributed with this repository.
+
+The validated `ACPIDriverDll.dll` SHA-256 is `345CFF34994351E126C4A7EF9FFC8E09FDE005951F1A63AF50D1945F28961A33`. A different library build disables direct control until it is separately analyzed and validated on the target laptop.

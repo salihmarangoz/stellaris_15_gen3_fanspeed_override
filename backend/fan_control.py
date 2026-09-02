@@ -12,6 +12,11 @@ from typing import Any
 
 import paho.mqtt.client as mqtt
 
+if __package__:
+    from backend.direct_fan_control import DirectEcClient
+else:
+    from direct_fan_control import DirectEcClient
+
 
 HOST = "::1"
 PORT = 13688
@@ -21,6 +26,8 @@ PASSWORD = "MyDynamicDesktopPwd888881772688"
 
 
 class ControlCenterClient:
+    method_name = "oem_mqtt"
+
     def __init__(self) -> None:
         self._connected = threading.Event()
         self._messages: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=32)
@@ -181,7 +188,7 @@ def save_backup(curve: dict[str, Any]) -> Path:
 
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Control the XMG/Uniwill fan curve through the OEM service."
+        description="Control the XMG/Uniwill fan curve through OEM MQTT or direct EC access."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -214,6 +221,11 @@ def make_parser() -> argparse.ArgumentParser:
 
     restore_parser = subparsers.add_parser("restore", help="Restore a saved curve backup")
     restore_parser.add_argument("backup", type=Path)
+    restore_parser.add_argument(
+        "--direct",
+        action="store_true",
+        help="Restore a DIRECT_EC backup through the validated OEM EC driver",
+    )
     restore_parser.add_argument("--apply", action="store_true")
 
     boost_parser = subparsers.add_parser("boost", help="Turn the OEM 100%% override on or off")
@@ -224,6 +236,17 @@ def make_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = make_parser().parse_args()
+    if args.command == "restore" and args.direct:
+        curve = json.loads(args.backup.read_text(encoding="utf-8"))
+        print_json(curve)
+        if not args.apply:
+            print("Dry run only. Add --apply to restore this direct EC backup.", file=sys.stderr)
+            return
+        with DirectEcClient() as direct_client:
+            direct_client.restore_curve(curve)
+        print(f"Restored the direct EC fan table from {args.backup}")
+        return
+
     with ControlCenterClient() as client:
         if args.command == "status":
             print_json(client.status())
@@ -257,6 +280,8 @@ def main() -> None:
 
         if args.command == "restore":
             curve = json.loads(args.backup.read_text(encoding="utf-8"))
+            if curve.get("Name") == "DIRECT_EC":
+                raise RuntimeError("A DIRECT_EC backup must be restored with --direct")
             print_json(curve)
             if not args.apply:
                 print("Dry run only. Add --apply to restore this curve.", file=sys.stderr)

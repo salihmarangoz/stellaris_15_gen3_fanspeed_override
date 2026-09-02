@@ -36,6 +36,15 @@ QLabel#warningText {
     font-size: 12px;
 }
 
+QLabel#methodBadge {
+    color: #9de8d5;
+    background: #203a34;
+    border: 1px solid #32695c;
+    border-radius: 5px;
+    padding: 6px 10px;
+    font-weight: 650;
+}
+
 QFrame#divider {
     color: #34393e;
 }
@@ -82,6 +91,16 @@ QSpinBox {
     border-radius: 5px;
 }
 
+QCheckBox {
+    spacing: 9px;
+    color: #d8dde1;
+}
+
+QCheckBox::indicator {
+    width: 17px;
+    height: 17px;
+}
+
 QPushButton {
     min-height: 36px;
     padding: 0 14px;
@@ -109,6 +128,17 @@ QPushButton#primaryButton {
 
 QPushButton#primaryButton:hover {
     background: #34c8a8;
+}
+
+QPushButton#exitButton {
+    color: #ffd9d5;
+    background: #432725;
+    border-color: #7f3d37;
+    min-width: 72px;
+}
+
+QPushButton#exitButton:hover {
+    background: #59302c;
 }
 
 QPushButton:disabled, QSpinBox:disabled, QSlider:disabled {

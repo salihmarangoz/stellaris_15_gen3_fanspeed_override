@@ -15,6 +15,10 @@ Last reviewed: 2026-09-02
 |-- ACCIDENTS.md                 factual important-incident records
 |-- TODO.md                      prioritized open debt, problems, and work
 |-- THIRD_PARTY_NOTICES.md       pinned dependency provenance and licenses
+|-- assets\
+|   |-- stellaris-fan-control.png transparent application/tray icon source
+|   `-- stellaris-fan-control.ico Windows executable icon
+|-- stellaris15gen3.py           elevated single-process packaged entry point
 |-- stellaris15gen3_frontend.py  normal-user frontend application entry point
 |-- stellaris15gen3_backend.py   elevated backend application entry point
 |-- frontend\
@@ -26,8 +30,9 @@ Last reviewed: 2026-09-02
 |   |-- __init__.py              backend package marker
 |   |-- fan_control_backend.py   elevated scheduler, IPC server, watchdog
 |   |-- temperature_service.py   independent Ryzen and NVIDIA temperature reads
-|   |-- fan_control_service.py   serialized singleton OEM-service owner
+|   |-- fan_control_service.py   serialized singleton and control-method selector
 |   |-- fan_control.py           low-level MQTT, curves, backup/restore CLI
+|   |-- direct_fan_control.py    validated direct Uniwill EC fan-table access
 |   |-- fan_control_probe.py     read-only MQTT diagnostic utility
 |   `-- requirements.txt         backend-only runtime dependencies
 |-- shared\
@@ -51,6 +56,9 @@ Last reviewed: 2026-09-02
 ## Dependency direction
 
 ```text
+stellaris15gen3.py          -> frontend/fan_control_gui.py
+                           `-> backend/fan_control_backend.py
+
 stellaris15gen3_frontend.py -> frontend/fan_control_gui.py
                               `-- shared/{fan_control_common,fan_control_ipc}.py
 
@@ -58,10 +66,11 @@ stellaris15gen3_backend.py  -> backend/fan_control_backend.py
                               |-- shared/{fan_control_common,fan_control_ipc}.py
                               |-- backend/temperature_service.py
                               `-- backend/fan_control_service.py
-                                   `-- backend/fan_control.py
+                                   |-- backend/fan_control.py
+                                   `-- backend/direct_fan_control.py
 ```
 
-`backend/temperature_service.py` must remain independent of `backend/fan_control_service.py` and the OEM Control Center. `frontend/fan_control_gui.py` must not import the `backend` package. `shared/fan_control_common.py` stays pure so curve behavior can be tested without Qt, MQTT, PawnIO, NVIDIA, or administrator access. Shared code must not import either process package.
+`backend/temperature_service.py` must remain independent of `backend/fan_control_service.py` and both fan-control methods. `frontend/fan_control_gui.py` must not import the `backend` package. `shared/fan_control_common.py` stays pure so curve behavior can be tested without Qt, MQTT, PawnIO, NVIDIA, or administrator access. Shared code must not import either process package.
 
 ## Runtime paths
 
@@ -69,10 +78,13 @@ stellaris15gen3_backend.py  -> backend/fan_control_backend.py
 %LOCALAPPDATA%\StellarisFanControl\
 |-- backend-endpoint.json    loopback address and random IPC token
 |-- backend.lock             process-wide backend singleton lock
+|-- last-oem-curve.json      last complete OEM curve for direct failover
 `-- fan-backups\             backups created by packaged writes
 ```
 
-Source-mode backups are written to `fan-backups\` in the repository. The endpoint file is replaced atomically when a backend starts and removed only when that same backend shuts down normally.
+Source-mode backups and `last-oem-curve.json` are written to `fan-backups\` in the repository. The endpoint file is replaced atomically when a backend starts and removed only when that same backend shuts down normally.
+
+Packaged user selections are stored as `StellarisFanControl.json` beside `StellarisFanControl.exe`. Source mode uses the ignored repository-root file of the same name.
 
 ## Generated and local-only paths
 
@@ -87,6 +99,7 @@ build\
 dist\
 *.spec
 third_party\pawnio\AMDFamily17.bin
+StellarisFanControl.json
 ```
 
-`scripts\build_exe.ps1` produces sibling `dist\StellarisFanControlFrontend.exe` and `dist\StellarisFanControlBackend.exe` applications. The frontend embeds `frontend\stellaris15gen3.css`; the backend embeds the hash-verified AMD PawnIO module and carries an administrator manifest. The PawnIO driver and OEM Control Center remain external system dependencies.
+`scripts\build_exe.ps1` produces one `dist\StellarisFanControl.exe` containing the interface, controller, stylesheet, tray icon, and the hash-verified AMD PawnIO module. The generated ICO is embedded as the executable icon. The executable carries an administrator manifest and runs as one process after UAC approval. The PawnIO driver and OEM Control Center remain external system dependencies.

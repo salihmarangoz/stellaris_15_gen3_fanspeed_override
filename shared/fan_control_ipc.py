@@ -15,10 +15,7 @@ FRONTEND_HEARTBEAT_TIMEOUT_SECONDS = 45.0
 MAX_MESSAGE_BYTES = 64 * 1024
 APP_DIRECTORY_NAME = "StellarisFanControl"
 ENDPOINT_FILENAME = "backend-endpoint.json"
-COMPONENT_EXECUTABLES = {
-    "frontend": "StellarisFanControlFrontend.exe",
-    "backend": "StellarisFanControlBackend.exe",
-}
+PACKAGED_EXECUTABLE = "StellarisFanControl.exe"
 COMPONENT_ENTRY_POINTS = {
     "frontend": "stellaris15gen3_frontend.py",
     "backend": "stellaris15gen3_backend.py",
@@ -50,10 +47,10 @@ def application_directory() -> Path:
 
 
 def component_command(role: str, *extra_arguments: str) -> list[str]:
-    if role not in COMPONENT_EXECUTABLES:
+    if role not in COMPONENT_ENTRY_POINTS:
         raise ValueError(f"Unknown application component: {role}")
     if getattr(sys, "frozen", False):
-        executable = application_directory() / COMPONENT_EXECUTABLES[role]
+        executable = application_directory() / PACKAGED_EXECUTABLE
         return [str(executable), *extra_arguments]
 
     python = Path(sys.executable)
@@ -144,7 +141,14 @@ class BackendClient:
     def __init__(self, timeout: float = 15.0) -> None:
         self.timeout = timeout
 
-    def request(self, command: str, **arguments: Any) -> Any:
+    def request(
+        self,
+        command: str,
+        *,
+        request_timeout: float | None = None,
+        **arguments: Any,
+    ) -> Any:
+        timeout = self.timeout if request_timeout is None else request_timeout
         try:
             endpoint = json.loads(endpoint_path().read_text(encoding="utf-8"))
             host = str(endpoint["host"])
@@ -158,8 +162,8 @@ class BackendClient:
             separators=(",", ":"),
         ).encode("utf-8") + b"\n"
         try:
-            with socket.create_connection((host, port), timeout=self.timeout) as connection:
-                connection.settimeout(self.timeout)
+            with socket.create_connection((host, port), timeout=timeout) as connection:
+                connection.settimeout(timeout)
                 connection.sendall(payload)
                 received = bytearray()
                 while b"\n" not in received:

@@ -34,10 +34,6 @@ Add redacted rotating logs for process starts, privilege state, sensor-source fa
 
 Test the mode toggle, whole-panel disabled overlay, curve slider constraints, reset behavior, low-duty confirmation, four gauges, backend-offline state, and mode resynchronization with Qt's offscreen platform and a mocked backend.
 
-## MEDIUM - Decide whether user settings should survive a full shutdown
-
-Automatic endpoints and mode currently live in backend memory and are restored only while one side survives. Decide whether a complete app or system restart should remain safely Manual by default or restore selected settings. Any persistence design must avoid entering Automatic before both sensors and the active OEM curve have been validated.
-
 ## LOW - Add a documentation consistency check
 
 Add a lightweight check that flags tracked source files missing from `STRUCTURE.md`, invalid TODO priority headings, and accident entries missing Problem, Outcomes, or Solution sections.

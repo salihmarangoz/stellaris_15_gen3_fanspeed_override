@@ -26,8 +26,9 @@ This repository contains experimental, hardware-specific fan control for a Stell
 - `shared/fan_control_common.py`: pure automatic-curve constants and calculation shared by the two processes.
 - `frontend/fan_control_gui.py`: PySide6 frontend, display timers, worker lifecycle, backend watchdog, and single-GUI enforcement.
 - `frontend/stellaris15gen3.css`: the complete frontend stylesheet.
-- `stellaris15gen3_frontend.py`: source and packaged normal-user frontend entry point.
-- `stellaris15gen3_backend.py`: source and packaged elevated background-backend entry point.
+- `stellaris15gen3.py`: elevated single-process packaged entry point with an in-process controller client.
+- `stellaris15gen3_frontend.py`: source normal-user frontend entry point.
+- `stellaris15gen3_backend.py`: source elevated background-backend entry point.
 - `backend/fan_control_probe.py`: read-only MQTT diagnostic utility.
 - `scripts/setup_pawnio.ps1`: installs PawnIO and downloads the pinned, hash-verified AMD module.
 - `scripts/build_exe.ps1`: reproducible PyInstaller entry point.
@@ -38,13 +39,12 @@ Keep protocol, service ownership, sensor acquisition, and presentation in these 
 ## Concurrency and modes
 
 - Only one GUI instance may run. Preserve the `QLocalServer` guard.
-- Only the backend may import `ControlCenterService`, read hardware temperatures, or perform fan writes.
-- Only one backend, one `ControlCenterService`, and one MQTT client may run for the current user.
+- Only backend modules and the packaged composition root may import `ControlCenterService`; frontend modules must access the controller through the injected client.
+- Only one application controller, one `ControlCenterService`, and one MQTT client may run for the current user.
 - Backend requests are synchronous but must run off the GUI thread.
 - Keep the GUI worker pool serialized with at most one operation running. Timer callbacks must skip while busy; they must not enqueue an unbounded backlog.
 - Selecting Auto tells the backend to start an immediate cycle and a non-overlapping 15-second schedule. Selecting Manual stops future Auto cycles in the backend.
-- The backend must keep Auto mode running if the frontend exits unexpectedly. Each process may attempt to restart the other no more than once per 60 seconds.
-- An intentional frontend close must detach from the backend so the watchdog does not reopen it.
+- In the packaged single-process application, the window close control hides to the system tray and leaves Auto running. Only the dedicated confirmed Exit path writes both fans to 80% and stops the controller. Separate source-mode processes retain their existing watchdog behavior.
 - Telemetry refreshes must not overwrite Auto status or block interaction.
 - Relative status age, such as `(last updated 7 seconds ago)`, is a display-only timer and must not trigger sensor or MQTT reads.
 
@@ -53,7 +53,7 @@ Keep protocol, service ownership, sensor acquisition, and presentation in these 
 - Ryzen temperature is read from SMN register `0x00059800` through PawnIO's restricted `AMDFamily17` module.
 - Decode bits 31:21 in 0.125 C units and apply the 49 C range adjustment when the range/Tj selector flags indicate it.
 - Use the global `Access_PCI` mutex around the SMN operation.
-- PawnIO access requires administrator rights. Only the backend may run elevated; source and packaged frontends must remain at normal user integrity. An elevated backend must launch frontend replacements through the non-elevated Windows shell.
+- PawnIO access requires administrator rights. The packaged single-process application starts with UAC and runs elevated. In separate source mode, only the backend is elevated and it must launch frontend replacements through the non-elevated Windows shell.
 - The AMD module URL, commit, and SHA-256 in `scripts/setup_pawnio.ps1` are a supply-chain boundary. Do not update them without validating the new module on the target laptop and updating `THIRD_PARTY_NOTICES.md`.
 - Do not reintroduce Core Temp, ACPI thermal-zone fallback, WinRing0, or a Control Center temperature fallback without explicit user direction and hardware validation.
 
@@ -62,7 +62,7 @@ Keep protocol, service ownership, sensor acquisition, and presentation in these 
 Use the existing virtual environment when available:
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile backend\fan_control.py backend\fan_control_backend.py backend\fan_control_service.py backend\temperature_service.py frontend\fan_control_gui.py shared\fan_control_common.py shared\fan_control_ipc.py stellaris15gen3_frontend.py stellaris15gen3_backend.py
+.\.venv\Scripts\python.exe -m py_compile backend\fan_control.py backend\fan_control_backend.py backend\fan_control_service.py backend\temperature_service.py frontend\fan_control_gui.py shared\fan_control_common.py shared\fan_control_ipc.py stellaris15gen3.py stellaris15gen3_frontend.py stellaris15gen3_backend.py
 ```
 
 For GUI-only checks, use Qt's offscreen platform and avoid selecting Auto. Read-only live temperature checks require an elevated process and PawnIO. Clearly report when a check was not run because elevation or the target hardware was unavailable.

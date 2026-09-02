@@ -1,3 +1,4 @@
+import json
 import sys
 import time
 import traceback
@@ -6,19 +7,22 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QColor, QCloseEvent, QPainter, QPen
+from PySide6.QtGui import QAction, QColor, QCloseEvent, QIcon, QPainter, QPen
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSlider,
     QSpinBox,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -40,6 +44,8 @@ from shared.fan_control_ipc import (
 
 INSTANCE_SERVER_NAME = "stellaris15gen3.fan-control"
 STYLESHEET_NAME = "stellaris15gen3.css"
+ICON_FILENAME = "stellaris-fan-control.png"
+SETTINGS_FILENAME = "StellarisFanControl.json"
 
 
 class FanCurveGraph(QWidget):
@@ -228,7 +234,7 @@ class ModeToggle(QAbstractButton):
     def __init__(self) -> None:
         super().__init__()
         self.setCheckable(True)
-        self.setChecked(True)
+        self.setChecked(False)
         self.setFixedSize(220, 40)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAccessibleName("Control mode")
@@ -304,7 +310,7 @@ class Worker(QRunnable):
 
 
 class FanControlWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, backend: Any | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Fan Control")
         self.setMinimumSize(1080, 650)
@@ -312,23 +318,34 @@ class FanControlWindow(QMainWindow):
 
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(1)
-        self._backend = BackendClient()
+        self._backend = backend if backend is not None else BackendClient()
         self._busy = False
         self._telemetry_inflight = False
         self._backend_check_inflight = False
         self._backend_offline = False
         self._last_backend_restart = 0.0
         self._closing = False
+        self._exit_in_progress = False
+        self._exit_prepared = False
         self._syncing = False
         self._curve_syncing = False
-        self._dirty = False
+        self._last_manual_values = (50, 50)
+        self._preferences = self._load_preferences()
         self._table_name = ""
+        self._control_method: str | None = None
         self._status_message = "Connecting to Control Center..."
         self._status_updated_at: float | None = None
         self._workers: set[Worker] = set()
 
+        self._manual_apply_timer = QTimer(self)
+        self._manual_apply_timer.setSingleShot(True)
+        self._manual_apply_timer.setInterval(300)
+        self._manual_apply_timer.timeout.connect(self.apply_speeds)
+
         self._build_ui()
+        self._apply_preferences_to_controls()
         self._apply_style()
+        self._setup_tray()
 
         self._telemetry_timer = QTimer(self)
         self._telemetry_timer.setInterval(10000)
@@ -344,7 +361,7 @@ class FanControlWindow(QMainWindow):
         self._backend_watchdog_timer.setInterval(5000)
         self._backend_watchdog_timer.timeout.connect(self.check_backend)
         self._backend_watchdog_timer.start()
-        QTimer.singleShot(0, self.load_state)
+        QTimer.singleShot(0, self._load_initial_state)
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -353,9 +370,20 @@ class FanControlWindow(QMainWindow):
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(18)
 
+        heading_row = QHBoxLayout()
         heading = QLabel("Fan Control")
         heading.setObjectName("heading")
-        layout.addWidget(heading)
+        heading_row.addWidget(heading)
+        heading_row.addStretch()
+        self.control_method_label = QLabel("Detecting control...")
+        self.control_method_label.setObjectName("methodBadge")
+        heading_row.addWidget(self.control_method_label)
+        self.exit_button = QPushButton("Exit")
+        self.exit_button.setObjectName("exitButton")
+        self.exit_button.setToolTip("Set both fans to 80% and exit")
+        self.exit_button.clicked.connect(self.request_exit)
+        heading_row.addWidget(self.exit_button)
+        layout.addLayout(heading_row)
 
         self.connection_label = QLabel(self._status_message)
         self.connection_label.setObjectName("statusText")
@@ -413,7 +441,7 @@ class FanControlWindow(QMainWindow):
 
         reset_row = QHBoxLayout()
         reset_row.addStretch()
-        self.reset_curve_button = QPushButton("Reset to 40 / 80 C")
+        self.reset_curve_button = QPushButton("Reset to 35 / 75 C")
         self.reset_curve_button.clicked.connect(self._reset_auto_temperatures)
         reset_row.addWidget(self.reset_curve_button)
         auto_layout.addLayout(reset_row)
@@ -434,17 +462,28 @@ class FanControlWindow(QMainWindow):
         manual_layout.addWidget(manual_title)
         self.cpu_slider, self.cpu_spin = self._fan_row(manual_layout, "CPU fan")
         self.gpu_slider, self.gpu_spin = self._fan_row(manual_layout, "GPU fan")
+        self.cpu_slider.valueChanged.connect(
+            lambda value: self._mirror_manual_value(self.cpu_slider, value)
+        )
+        self.gpu_slider.valueChanged.connect(
+            lambda value: self._mirror_manual_value(self.gpu_slider, value)
+        )
 
-        warning = QLabel("Values below 30% may stop a fan and require confirmation.")
+        self.mirror_fans_checkbox = QCheckBox("Mirror fan speeds")
+        self.mirror_fans_checkbox.setToolTip(
+            "Keep the CPU and GPU manual fan targets at the same percentage"
+        )
+        self.mirror_fans_checkbox.toggled.connect(self._mirror_manual_toggled)
+        manual_layout.addWidget(self.mirror_fans_checkbox)
+
+        warning = QLabel(
+            "Changes apply automatically. Values below 30% may stop a fan and "
+            "require confirmation."
+        )
         warning.setObjectName("warningText")
         warning.setWordWrap(True)
         manual_layout.addWidget(warning)
         manual_layout.addStretch()
-
-        self.apply_button = QPushButton("Apply manual speeds")
-        self.apply_button.setObjectName("primaryButton")
-        self.apply_button.clicked.connect(self.apply_speeds)
-        manual_layout.addWidget(self.apply_button)
         columns.addWidget(self.manual_panel, 1)
 
         self.sensor_panel = QFrame()
@@ -485,6 +524,12 @@ class FanControlWindow(QMainWindow):
         self.boost_button.setToolTip("Toggle the OEM 100% fan override")
         self.boost_button.toggled.connect(self.toggle_boost)
         sensor_layout.addWidget(self.boost_button)
+        self.oem_service_button = QPushButton("Stop GCUBridge")
+        self.oem_service_button.setToolTip(
+            "Start or stop the OEM fan-control service after confirmation"
+        )
+        self.oem_service_button.clicked.connect(self.toggle_oem_service)
+        sensor_layout.addWidget(self.oem_service_button)
         columns.addWidget(self.sensor_panel, 1)
 
         self._update_mode_panels()
@@ -520,13 +565,11 @@ class FanControlWindow(QMainWindow):
 
         slider.valueChanged.connect(spin.setValue)
         spin.valueChanged.connect(slider.setValue)
-        slider.valueChanged.connect(self._mark_dirty)
-        slider.sliderReleased.connect(
-            lambda: slider.setValue(((slider.value() + 2) // 5) * 5)
+        slider.sliderReleased.connect(lambda: self._manual_input_finished(slider))
+        slider.actionTriggered.connect(
+            lambda _action: self._manual_slider_action(slider)
         )
-        spin.editingFinished.connect(
-            lambda: spin.setValue(((spin.value() + 2) // 5) * 5)
-        )
+        spin.editingFinished.connect(lambda: self._manual_input_finished(spin))
         return slider, spin
 
     def _temperature_row(
@@ -566,13 +609,157 @@ class FanControlWindow(QMainWindow):
             stylesheet_path = Path(__file__).resolve().with_name(STYLESHEET_NAME)
         self.setStyleSheet(stylesheet_path.read_text(encoding="utf-8"))
 
-    def _mark_dirty(self) -> None:
-        if not self._syncing:
-            self._dirty = True
+    @staticmethod
+    def _icon_path() -> Path:
+        if hasattr(sys, "_MEIPASS"):
+            return Path(sys._MEIPASS) / "assets" / ICON_FILENAME
+        return Path(__file__).resolve().parents[1] / "assets" / ICON_FILENAME
+
+    def _setup_tray(self) -> None:
+        icon = QIcon(str(self._icon_path()))
+        self.setWindowIcon(icon)
+        self.tray_icon = QSystemTrayIcon(icon, self)
+        self.tray_icon.setToolTip("Fan Control")
+        tray_menu = QMenu(self)
+        show_action = QAction("Show Fan Control", self)
+        show_action.triggered.connect(self.activate_from_second_instance)
+        tray_menu.addAction(show_action)
+        tray_menu.addSeparator()
+        self.tray_exit_action = QAction("Exit", self)
+        self.tray_exit_action.triggered.connect(self.request_exit)
+        tray_menu.addAction(self.tray_exit_action)
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self._tray_activated)
+        self.tray_icon.show()
+
+    @staticmethod
+    def _settings_path() -> Path:
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().with_suffix(".json")
+        return Path(__file__).resolve().parents[1] / SETTINGS_FILENAME
+
+    @classmethod
+    def _load_preferences(cls) -> dict[str, Any]:
+        defaults: dict[str, Any] = {
+            "minimum_temp": DEFAULT_MIN_FAN_TEMP,
+            "maximum_temp": DEFAULT_MAX_FAN_TEMP,
+            "manual_cpu": 50,
+            "manual_gpu": 50,
+            "mirror_fans": False,
+        }
+        try:
+            loaded = json.loads(cls._settings_path().read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                return defaults
+            minimum = int(loaded.get("minimum_temp", defaults["minimum_temp"]))
+            maximum = int(loaded.get("maximum_temp", defaults["maximum_temp"]))
+            cpu = int(loaded.get("manual_cpu", defaults["manual_cpu"]))
+            gpu = int(loaded.get("manual_gpu", defaults["manual_gpu"]))
+            mirror = loaded.get("mirror_fans", defaults["mirror_fans"])
+            if not 0 <= minimum <= maximum <= 100:
+                return defaults
+            if not 0 <= cpu <= 100 or not 0 <= gpu <= 100:
+                return defaults
+            if not isinstance(mirror, bool):
+                return defaults
+            return {
+                "minimum_temp": minimum,
+                "maximum_temp": maximum,
+                "manual_cpu": cpu,
+                "manual_gpu": gpu,
+                "mirror_fans": mirror,
+            }
+        except (OSError, ValueError, TypeError):
+            return defaults
+
+    def _apply_preferences_to_controls(self) -> None:
+        self._syncing = True
+        try:
+            self.mode_toggle.blockSignals(True)
+            self.mode_toggle.setChecked(False)
+            self.mode_toggle.blockSignals(False)
+            self._set_auto_temperatures(
+                int(self._preferences["minimum_temp"]),
+                int(self._preferences["maximum_temp"]),
+            )
+            self.cpu_slider.setValue(int(self._preferences["manual_cpu"]))
+            self.gpu_slider.setValue(int(self._preferences["manual_gpu"]))
+            self.mirror_fans_checkbox.setChecked(
+                bool(self._preferences["mirror_fans"])
+            )
+        finally:
+            self._syncing = False
+        self._last_manual_values = (self.cpu_slider.value(), self.gpu_slider.value())
+        self._update_mode_panels()
+
+    def _save_preferences(self) -> None:
+        settings = {
+            "minimum_temp": self.min_temp_spin.value(),
+            "maximum_temp": self.max_temp_spin.value(),
+            "manual_cpu": self.cpu_spin.value(),
+            "manual_gpu": self.gpu_spin.value(),
+            "mirror_fans": self.mirror_fans_checkbox.isChecked(),
+        }
+        path = self._settings_path()
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        try:
+            temporary.write_text(
+                json.dumps(settings, indent=2) + "\n", encoding="utf-8"
+            )
+            temporary.replace(path)
+        except OSError as exc:
+            self._set_status(f"Could not save settings | {exc}")
+
+    def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self.activate_from_second_instance()
+
+    def _manual_slider_action(self, slider: QSlider) -> None:
+        if not slider.isSliderDown():
+            self._schedule_manual_apply()
+
+    def _mirror_manual_value(self, source: QSlider, value: int) -> None:
+        if self._syncing or not self.mirror_fans_checkbox.isChecked():
+            return
+        target = self.gpu_slider if source is self.cpu_slider else self.cpu_slider
+        self._syncing = True
+        try:
+            target.setValue(value)
+        finally:
+            self._syncing = False
+
+    def _mirror_manual_toggled(self, enabled: bool) -> None:
+        if self._syncing:
+            return
+        if enabled:
+            self._syncing = True
+            try:
+                self.gpu_slider.setValue(self.cpu_slider.value())
+            finally:
+                self._syncing = False
+        self._save_preferences()
+        if enabled:
+            self._schedule_manual_apply()
+
+    def _manual_input_finished(self, control: QSlider | QSpinBox) -> None:
+        rounded = ((control.value() + 2) // 5) * 5
+        control.setValue(min(100, rounded))
+        self._schedule_manual_apply()
+
+    def _schedule_manual_apply(self) -> None:
+        if self._syncing or self._busy or not self.mode_toggle.is_manual():
+            return
+        self._manual_apply_timer.start()
 
     def _set_busy(self, busy: bool, message: str | None = None) -> None:
         self._busy = busy
         self.boost_button.setEnabled(not busy)
+        self.oem_service_button.setEnabled(not busy)
+        self.exit_button.setEnabled(not busy)
+        self.tray_exit_action.setEnabled(not busy)
         self.mode_toggle.setEnabled(not busy)
         self._update_mode_panels()
         if message:
@@ -600,8 +787,9 @@ class FanControlWindow(QMainWindow):
 
         def complete(result: dict[str, Any]) -> None:
             self._show_backend_state(result)
+            self._save_preferences()
             if manual:
-                self._set_status("Manual mode | Apply speeds when ready")
+                self._set_status("Manual mode | Speed changes apply automatically")
             else:
                 self._set_status("Automatic mode | Backend control started")
             QTimer.singleShot(0, self.refresh_telemetry)
@@ -660,13 +848,18 @@ class FanControlWindow(QMainWindow):
             return
         minimum_temp = self.min_temp_spin.value()
         maximum_temp = self.max_temp_spin.value()
+
+        def complete(result: dict[str, Any]) -> None:
+            self._show_backend_state(result)
+            self._save_preferences()
+
         self._run(
             lambda: self._backend.request(
                 "configure_auto",
                 minimum_temp=minimum_temp,
                 maximum_temp=maximum_temp,
             ),
-            self._show_backend_state,
+            complete,
             "Updating automatic curve...",
         )
 
@@ -675,6 +868,7 @@ class FanControlWindow(QMainWindow):
         operation: Callable[[], Any],
         on_complete: Callable[[Any], None],
         busy_message: str,
+        on_failed: Callable[[str], None] | None = None,
     ) -> None:
         if self._busy or self._closing:
             return
@@ -694,6 +888,8 @@ class FanControlWindow(QMainWindow):
             if self._closing:
                 return
             self._set_busy(False, "Fan-control backend communication failed")
+            if on_failed is not None:
+                on_failed(details)
             QMessageBox.critical(self, "Fan control error", details)
 
         worker.signals.completed.connect(complete)
@@ -707,15 +903,29 @@ class FanControlWindow(QMainWindow):
             "Reading fan state...",
         )
 
+    def _load_initial_state(self) -> None:
+        def complete(result: dict[str, Any]) -> None:
+            self._show_state(result)
+            self._apply_preferences_to_controls()
+            self._mode_changed(False)
+
+        self._run(
+            lambda: self._backend.request("load_state"),
+            complete,
+            "Reading fan state...",
+        )
+
     def _show_state(self, result: dict[str, Any]) -> None:
         status = result["status"]
         curve = result["curve"]
         backend = result["backend"]
         self._table_name = str(status["FAN_TableName"])
+        self._control_method = backend.get("control_method")
         self._syncing = True
         try:
-            self.cpu_slider.setValue(int(curve["CPU"][0]["Duty"]))
-            self.gpu_slider.setValue(int(curve["GPU"][0]["Duty"]))
+            if not bool(backend["automatic"]):
+                self.cpu_slider.setValue(int(curve["CPU"][0]["Duty"]))
+                self.gpu_slider.setValue(int(curve["GPU"][0]["Duty"]))
             self.boost_button.blockSignals(True)
             self.boost_button.setChecked(str(status["FanBoostEnable"]) == "1")
             self.boost_button.blockSignals(False)
@@ -727,8 +937,12 @@ class FanControlWindow(QMainWindow):
             )
         finally:
             self._syncing = False
+        if not bool(backend["automatic"]):
+            self._last_manual_values = (
+                self.cpu_slider.value(),
+                self.gpu_slider.value(),
+            )
         self._update_mode_panels()
-        self._dirty = False
         self._show_telemetry(result["telemetry"])
         self._show_backend_state(backend)
         if result["temperatures"] is not None:
@@ -779,8 +993,13 @@ class FanControlWindow(QMainWindow):
                 duty = None
             gauge.set_value(duty)
         if self._table_name and self.mode_toggle.is_manual():
+            method = {
+                "oem_mqtt": "OEM MQTT",
+                "direct_ec": "Direct EC",
+            }.get(self._control_method, "Fan control")
             self._set_status(
-                f"Connected | Active table: {self._table_name}", updated=True
+                f"Connected | {method} | Active table: {self._table_name}",
+                updated=True,
             )
 
     def _show_temperatures(self, temperatures: dict[str, Any]) -> None:
@@ -796,6 +1015,15 @@ class FanControlWindow(QMainWindow):
         self.source_label.setText(f"Sensor error: {error}")
 
     def _show_backend_state(self, backend: dict[str, Any]) -> None:
+        self._control_method = backend.get("control_method")
+        if self._control_method == "oem_mqtt":
+            self.oem_service_button.setText("Stop GCUBridge")
+            self.control_method_label.setText("OEM MQTT")
+        elif self._control_method == "direct_ec":
+            self.oem_service_button.setText("Start GCUBridge")
+            self.control_method_label.setText("Direct EC")
+        else:
+            self.control_method_label.setText("Detecting control...")
         target = backend.get("auto_target")
         self.auto_target_label.setText(
             "Shared target: --%" if target is None else f"Shared target: {target}%"
@@ -836,13 +1064,24 @@ class FanControlWindow(QMainWindow):
         return answer == QMessageBox.StandardButton.Yes
 
     def apply_speeds(self) -> None:
+        if self._syncing or self._busy or not self.mode_toggle.is_manual():
+            return
         cpu = self.cpu_spin.value()
         gpu = self.gpu_spin.value()
+        if (cpu, gpu) == self._last_manual_values:
+            return
         if not self._confirm_low_values(cpu, gpu):
+            self._syncing = True
+            try:
+                self.cpu_slider.setValue(self._last_manual_values[0])
+                self.gpu_slider.setValue(self._last_manual_values[1])
+            finally:
+                self._syncing = False
             return
 
         def complete(result: dict[str, Any]) -> None:
-            self._dirty = False
+            self._last_manual_values = (int(result["cpu"]), int(result["gpu"]))
+            self._save_preferences()
             self.boost_button.blockSignals(True)
             self.boost_button.setChecked(False)
             self.boost_button.blockSignals(False)
@@ -881,6 +1120,44 @@ class FanControlWindow(QMainWindow):
             lambda: self._backend.request("set_boost", enabled=enabled),
             complete,
             "Enabling Fan Boost..." if enabled else "Disabling Fan Boost...",
+        )
+
+    def toggle_oem_service(self) -> None:
+        start_service = self._control_method != "oem_mqtt"
+        action = "start" if start_service else "stop"
+        if start_service:
+            details = (
+                "Start the GCUBridge service and switch fan writes back to OEM MQTT?"
+            )
+        else:
+            details = (
+                "Stop the GCUBridge service and switch fan writes to direct EC control?\n\n"
+                "The OEM Control Center will not control the fans while its service is stopped."
+            )
+        answer = QMessageBox.question(
+            self,
+            f"Confirm GCUBridge {action}",
+            details,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        def complete(result: dict[str, Any]) -> None:
+            self._show_state(result)
+            method = "OEM MQTT" if start_service else "Direct EC"
+            self._set_status(f"GCUBridge {action}ped | {method} active", updated=True)
+
+        self._run(
+            lambda: self._backend.request(
+                "set_oem_service",
+                request_timeout=45.0,
+                enabled=start_service,
+                confirmed=True,
+            ),
+            complete,
+            f"{action.title()}ping GCUBridge...",
         )
 
     def check_backend(self) -> None:
@@ -942,16 +1219,72 @@ class FanControlWindow(QMainWindow):
             "Restoring backend control mode...",
         )
 
+    def request_exit(self) -> None:
+        if self._exit_in_progress:
+            return
+        if self._busy:
+            QMessageBox.information(
+                self,
+                "Fan operation in progress",
+                "Wait for the current fan operation to finish before exiting.",
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "Confirm exit",
+            "Set both fans to 80% and exit Fan Control?\n\n"
+            "The application will remain open if the 80% fan write fails.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self._exit_in_progress = True
+        self._manual_apply_timer.stop()
+
+        def complete(_result: dict[str, Any]) -> None:
+            self._exit_in_progress = False
+            self._exit_prepared = True
+            self.close()
+
+        def failed(_details: str) -> None:
+            self._exit_in_progress = False
+
+        self._run(
+            lambda: self._backend.request(
+                "prepare_exit", confirmed=True, request_timeout=45.0
+            ),
+            complete,
+            "Setting both fans to 80% before exit...",
+            on_failed=failed,
+        )
+
     def closeEvent(self, event: QCloseEvent) -> None:
+        if not self._exit_prepared:
+            event.ignore()
+            self.hide()
+            self.tray_icon.showMessage(
+                "Fan Control is still running",
+                "Use the Exit button or the tray menu to stop fan control.",
+                QSystemTrayIcon.MessageIcon.Information,
+                3000,
+            )
+            return
+
         self._closing = True
         self._telemetry_timer.stop()
         self._status_timer.stop()
         self._backend_watchdog_timer.stop()
         try:
-            BackendClient(timeout=0.5).request("frontend_detach")
+            self._backend.request("frontend_detach", request_timeout=0.5)
         except Exception:
             pass
+        self.tray_icon.hide()
         event.accept()
+        application = QApplication.instance()
+        if application is not None:
+            QTimer.singleShot(0, application.quit)
 
     def activate_from_second_instance(self) -> None:
         if self.isMinimized():
@@ -990,14 +1323,15 @@ def create_instance_server(window: FanControlWindow) -> QLocalServer:
     return server
 
 
-def main() -> None:
-    if not ensure_backend(start_frontend=False):
+def main(backend: Any | None = None) -> None:
+    if backend is None and not ensure_backend(start_frontend=False):
         raise RuntimeError("Could not start the fan-control backend")
     app = QApplication(sys.argv)
     app.setApplicationName("Fan Control")
+    app.setQuitOnLastWindowClosed(False)
     if notify_existing_instance():
         return
-    window = FanControlWindow()
+    window = FanControlWindow(backend=backend)
     window._instance_server = create_instance_server(window)
     window.show()
     raise SystemExit(app.exec())

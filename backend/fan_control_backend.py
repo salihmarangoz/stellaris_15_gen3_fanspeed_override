@@ -49,9 +49,14 @@ class BackendController:
         self._last_frontend_heartbeat: float | None = None
         self._last_frontend_restart = 0.0
 
-    def start(self, *, start_frontend: bool) -> None:
+    def start(self, *, start_frontend: bool, monitor_frontend: bool = True) -> None:
         threading.Thread(target=self._auto_loop, name="auto-control", daemon=True).start()
-        threading.Thread(target=self._frontend_watchdog, name="frontend-watchdog", daemon=True).start()
+        if monitor_frontend:
+            threading.Thread(
+                target=self._frontend_watchdog,
+                name="frontend-watchdog",
+                daemon=True,
+            ).start()
         if start_frontend:
             self.show_frontend(force=True)
 
@@ -78,6 +83,13 @@ class BackendController:
                 confirmed_low=bool(arguments.get("confirmed_low", False)),
             ),
             "set_boost": lambda: self.set_boost(bool(arguments["enabled"])),
+            "set_oem_service": lambda: self.set_oem_service(
+                bool(arguments["enabled"]),
+                confirmed=bool(arguments.get("confirmed", False)),
+            ),
+            "prepare_exit": lambda: self.prepare_exit(
+                confirmed=bool(arguments.get("confirmed", False))
+            ),
             "set_mode": lambda: self.set_mode(
                 bool(arguments["automatic"]),
                 int(arguments.get("minimum_temp", self._minimum_temp)),
@@ -106,6 +118,7 @@ class BackendController:
                 "auto_hottest": self._last_auto_hottest,
                 "auto_error": self._last_auto_error,
                 "auto_updated": self._last_auto_update,
+                "control_method": getattr(self._service, "method", None),
             }
 
     def _read_temperature_snapshot(self) -> tuple[dict[str, Any] | None, str | None]:
@@ -241,6 +254,28 @@ class BackendController:
                 self._next_auto_at = time.monotonic()
         self._auto_wakeup.set()
         return state
+
+    def set_oem_service(self, enabled: bool, *, confirmed: bool) -> dict[str, Any]:
+        if not confirmed:
+            raise PermissionError("GCUBridge service changes require confirmation")
+        with self._state_lock:
+            self._service.set_oem_service_running(enabled)
+            if self._automatic and not self._boost_enabled:
+                self._next_auto_at = time.monotonic()
+            result = self.load_state()
+        self._auto_wakeup.set()
+        return result
+
+    def prepare_exit(self, *, confirmed: bool) -> dict[str, Any]:
+        if not confirmed:
+            raise PermissionError("Application exit requires confirmation")
+        with self._state_lock:
+            result = self._service.apply_manual(80, 80)
+            self._automatic = False
+            self._boost_enabled = False
+            self._next_auto_at = None
+        self._auto_wakeup.set()
+        return result
 
     def frontend_heartbeat(self) -> dict[str, Any]:
         with self._state_lock:
