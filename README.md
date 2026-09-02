@@ -15,20 +15,17 @@ The project was developed for one Stellaris 15 Gen3 / XMG-Uniwill-style system r
 - CPU temperature is read directly from the Ryzen thermal SMN register through the signed [PawnIO](https://github.com/namazso/PawnIO) driver and a restricted AMD read module. The broken Control Center CPU temperature is never used.
 - GPU temperature is read from the NVIDIA driver with `nvidia-smi`.
 - Manual mode provides separate CPU and GPU sliders in 5% steps. Values below 30% require confirmation.
-- Auto mode checks temperatures every 15 seconds, uses `max(CPU, GPU)`, and applies one shared duty to both fans.
+- Auto mode checks temperatures every 15 seconds, uses `max(CPU, GPU)`, and applies one shared duty to both fans. Its 30% and 100% temperature endpoints are adjustable from 0-100 C and default to 40 C and 80 C.
 - Only one GUI and one Control Center communication client can run at a time. Background work is serialized so refreshes cannot build up in a queue or freeze the GUI.
 
-The automatic curve is linearly interpolated and rounded to the nearest 5%:
+The automatic curve is linearly interpolated between two adjustable endpoints and rounded to the nearest 5%:
 
-| Maximum temperature | Fan duty |
+| Default temperature endpoint | Fan duty |
 | ---: | ---: |
 | 40 C or below | 30% |
-| 50 C | 40% |
-| 60 C | 55% |
-| 70 C | 75% |
 | 80 C or above | 100% |
 
-Auto mode never requests less than 30%. Selecting the Auto tab starts control immediately and repeats it every 15 seconds. Returning to Manual stops future automatic updates; use **Apply manual speeds** to write the slider values.
+Auto mode never requests less than 30%. Selecting **Automatic** starts control immediately and repeats it every 15 seconds. Selecting **Manual** stops future automatic updates; use **Apply manual speeds** to write the slider values. The inactive control section is disabled, while sensor values and the OEM Fan Boost fallback remain available.
 
 ## Requirements
 

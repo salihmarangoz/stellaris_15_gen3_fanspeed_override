@@ -5,10 +5,11 @@ from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QColor, QCloseEvent, QPainter, QPen
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -18,7 +19,6 @@ from PySide6.QtWidgets import (
     QSlider,
     QSpinBox,
     QStyle,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -29,13 +29,69 @@ from temperature_service import Temperatures, read_temperatures
 
 INSTANCE_SERVER_NAME = "blabla.fan-control"
 AUTO_INTERVAL_MS = 15000
-AUTO_CURVE = (
-    (40, 30),
-    (50, 40),
-    (60, 55),
-    (70, 75),
-    (80, 100),
-)
+DEFAULT_MIN_FAN_TEMP = 40
+DEFAULT_MAX_FAN_TEMP = 80
+MIN_AUTO_DUTY = 30
+MAX_AUTO_DUTY = 100
+
+
+class FanCurveGraph(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self._minimum_temp = DEFAULT_MIN_FAN_TEMP
+        self._maximum_temp = DEFAULT_MAX_FAN_TEMP
+        self.setMinimumHeight(190)
+
+    def set_temperatures(self, minimum_temp: int, maximum_temp: int) -> None:
+        self._minimum_temp = minimum_temp
+        self._maximum_temp = maximum_temp
+        self.update()
+
+    def paintEvent(self, event: object) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        left, top, right, bottom = 38, 12, 14, 28
+        width = max(1, self.width() - left - right)
+        height = max(1, self.height() - top - bottom)
+
+        grid_pen = QPen(QColor("#34393e"), 1)
+        painter.setPen(grid_pen)
+        for value in range(0, 101, 20):
+            x = left + width * value / 100
+            y = top + height * (100 - value) / 100
+            painter.drawLine(int(x), top, int(x), top + height)
+            painter.drawLine(left, int(y), left + width, int(y))
+
+        label_pen = QPen(QColor("#aeb6bd"), 1)
+        painter.setPen(label_pen)
+        painter.drawText(2, top + 5, "100%")
+        painter.drawText(10, top + height + 5, "0%")
+        painter.drawText(left - 4, self.height() - 5, "0 C")
+        painter.drawText(left + width - 28, self.height() - 5, "100 C")
+
+        def point(temp: int, duty: int) -> tuple[int, int]:
+            return (
+                int(left + width * temp / 100),
+                int(top + height * (100 - duty) / 100),
+            )
+
+        curve_color = QColor("#25b99a" if self.isEnabled() else "#727980")
+        curve_pen = QPen(curve_color, 3)
+        painter.setPen(curve_pen)
+        points = [
+            point(0, MIN_AUTO_DUTY),
+            point(self._minimum_temp, MIN_AUTO_DUTY),
+            point(self._maximum_temp, MAX_AUTO_DUTY),
+            point(100, MAX_AUTO_DUTY),
+        ]
+        for start, end in zip(points, points[1:]):
+            painter.drawLine(*start, *end)
+
+        painter.setBrush(curve_color)
+        for x, y in points[1:3]:
+            painter.drawEllipse(x - 4, y - 4, 8, 8)
 
 
 class WorkerSignals(QObject):
@@ -68,8 +124,8 @@ class FanControlWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Fan Control")
-        self.setMinimumSize(600, 520)
-        self.resize(660, 560)
+        self.setMinimumSize(1080, 650)
+        self.resize(1240, 720)
 
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(1)
@@ -78,6 +134,7 @@ class FanControlWindow(QMainWindow):
         self._telemetry_inflight = False
         self._closing = False
         self._syncing = False
+        self._curve_syncing = False
         self._dirty = False
         self._auto_inflight = False
         self._auto_backup_needed = True
@@ -136,23 +193,79 @@ class FanControlWindow(QMainWindow):
         divider.setObjectName("divider")
         layout.addWidget(divider)
 
-        self.tabs = QTabWidget()
-        self.manual_tab = QWidget()
-        self.auto_tab = QWidget()
-        self.tabs.addTab(self.manual_tab, "Manual")
-        self.tabs.addTab(self.auto_tab, "Auto")
-        self.tabs.currentChanged.connect(self._mode_changed)
-        layout.addWidget(self.tabs, 1)
+        mode_row = QHBoxLayout()
+        mode_label = QLabel("Control mode")
+        mode_label.setObjectName("fanName")
+        mode_row.addWidget(mode_label)
+        mode_row.addSpacing(10)
+        self.manual_mode_button = QPushButton("Manual")
+        self.manual_mode_button.setCheckable(True)
+        self.auto_mode_button = QPushButton("Automatic")
+        self.auto_mode_button.setCheckable(True)
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.setExclusive(True)
+        self.mode_group.addButton(self.manual_mode_button, 0)
+        self.mode_group.addButton(self.auto_mode_button, 1)
+        self.mode_group.idClicked.connect(self._mode_changed)
+        self.manual_mode_button.setChecked(True)
+        mode_row.addWidget(self.manual_mode_button)
+        mode_row.addWidget(self.auto_mode_button)
+        mode_row.addStretch()
+        layout.addLayout(mode_row)
 
-        manual_layout = QVBoxLayout(self.manual_tab)
-        manual_layout.setContentsMargins(4, 18, 4, 4)
+        columns = QHBoxLayout()
+        columns.setSpacing(14)
+        layout.addLayout(columns, 1)
+
+        self.auto_panel = QFrame()
+        self.auto_panel.setObjectName("panel")
+        auto_layout = QVBoxLayout(self.auto_panel)
+        auto_layout.setContentsMargins(18, 18, 18, 18)
+        auto_layout.setSpacing(12)
+        auto_title = QLabel("Automatic")
+        auto_title.setObjectName("sectionTitle")
+        auto_layout.addWidget(auto_title)
+        auto_help = QLabel(
+            "Both fans follow the hottest sensor. The target rises from 30% to "
+            "100% between these temperatures."
+        )
+        auto_help.setWordWrap(True)
+        auto_help.setObjectName("statusText")
+        auto_layout.addWidget(auto_help)
+        self.min_temp_slider, self.min_temp_spin = self._temperature_row(
+            auto_layout, "30% fan speed at", DEFAULT_MIN_FAN_TEMP
+        )
+        self.max_temp_slider, self.max_temp_spin = self._temperature_row(
+            auto_layout, "100% fan speed at", DEFAULT_MAX_FAN_TEMP
+        )
+        self.min_temp_slider.valueChanged.connect(self._minimum_temp_changed)
+        self.min_temp_spin.valueChanged.connect(self._minimum_temp_changed)
+        self.max_temp_slider.valueChanged.connect(self._maximum_temp_changed)
+        self.max_temp_spin.valueChanged.connect(self._maximum_temp_changed)
+
+        reset_row = QHBoxLayout()
+        reset_row.addStretch()
+        self.reset_curve_button = QPushButton("Reset to 40 / 80 C")
+        self.reset_curve_button.clicked.connect(self._reset_auto_temperatures)
+        reset_row.addWidget(self.reset_curve_button)
+        auto_layout.addLayout(reset_row)
+        self.curve_graph = FanCurveGraph()
+        auto_layout.addWidget(self.curve_graph, 1)
+        self.auto_target_label = QLabel("Shared target: --%")
+        self.auto_target_label.setObjectName("reportedValue")
+        auto_layout.addWidget(self.auto_target_label)
+        columns.addWidget(self.auto_panel, 1)
+
+        self.manual_panel = QFrame()
+        self.manual_panel.setObjectName("panel")
+        manual_layout = QVBoxLayout(self.manual_panel)
+        manual_layout.setContentsMargins(18, 18, 18, 18)
         manual_layout.setSpacing(18)
-        self.cpu_slider, self.cpu_spin, self.cpu_reported = self._fan_row(
-            manual_layout, "CPU fan"
-        )
-        self.gpu_slider, self.gpu_spin, self.gpu_reported = self._fan_row(
-            manual_layout, "GPU fan"
-        )
+        manual_title = QLabel("Manual control")
+        manual_title.setObjectName("sectionTitle")
+        manual_layout.addWidget(manual_title)
+        self.cpu_slider, self.cpu_spin = self._fan_row(manual_layout, "CPU fan")
+        self.gpu_slider, self.gpu_spin = self._fan_row(manual_layout, "GPU fan")
 
         warning = QLabel("Values below 30% may stop a fan and require confirmation.")
         warning.setObjectName("warningText")
@@ -160,63 +273,54 @@ class FanControlWindow(QMainWindow):
         manual_layout.addWidget(warning)
         manual_layout.addStretch()
 
-        actions = QHBoxLayout()
-        actions.setSpacing(10)
+        self.apply_button = QPushButton("Apply manual speeds")
+        self.apply_button.setObjectName("primaryButton")
+        self.apply_button.clicked.connect(self.apply_speeds)
+        manual_layout.addWidget(self.apply_button)
+        columns.addWidget(self.manual_panel, 1)
+
+        self.sensor_panel = QFrame()
+        self.sensor_panel.setObjectName("panel")
+        sensor_layout = QVBoxLayout(self.sensor_panel)
+        sensor_layout.setContentsMargins(18, 18, 18, 18)
+        sensor_layout.setSpacing(14)
+        sensor_title = QLabel("Sensor values")
+        sensor_title.setObjectName("sectionTitle")
+        sensor_layout.addWidget(sensor_title)
+        self.cpu_temp_label = QLabel("CPU temperature: --.- C")
+        self.cpu_temp_label.setObjectName("temperatureValue")
+        sensor_layout.addWidget(self.cpu_temp_label)
+        self.cpu_reported = QLabel("CPU fan reported: --%")
+        self.cpu_reported.setObjectName("reportedValue")
+        sensor_layout.addWidget(self.cpu_reported)
+
+        self.gpu_temp_label = QLabel("GPU temperature: --.- C")
+        self.gpu_temp_label.setObjectName("temperatureValue")
+        sensor_layout.addWidget(self.gpu_temp_label)
+        self.gpu_reported = QLabel("GPU fan reported: --%")
+        self.gpu_reported.setObjectName("reportedValue")
+        sensor_layout.addWidget(self.gpu_reported)
+        self.source_label = QLabel("CPU: PawnIO Ryzen SMN | GPU: NVIDIA driver")
+        self.source_label.setWordWrap(True)
+        self.source_label.setObjectName("statusText")
+        sensor_layout.addWidget(self.source_label)
+        sensor_layout.addStretch()
         self.boost_button = QPushButton("Fan Boost 100%")
         self.boost_button.setCheckable(True)
         self.boost_button.setToolTip("Toggle the OEM 100% fan override")
         self.boost_button.toggled.connect(self.toggle_boost)
-        actions.addWidget(self.boost_button)
-        actions.addStretch()
+        sensor_layout.addWidget(self.boost_button)
+        columns.addWidget(self.sensor_panel, 1)
 
-        self.apply_button = QPushButton("Apply manual speeds")
-        self.apply_button.setObjectName("primaryButton")
-        self.apply_button.clicked.connect(self.apply_speeds)
-        actions.addWidget(self.apply_button)
-        manual_layout.addLayout(actions)
-
-        auto_layout = QVBoxLayout(self.auto_tab)
-        auto_layout.setContentsMargins(4, 18, 4, 4)
-        auto_layout.setSpacing(14)
-        self.cpu_temp_label = QLabel("CPU temperature: --.- C")
-        self.cpu_temp_label.setObjectName("temperatureValue")
-        self.cpu_auto_label = QLabel("Target: --%")
-        self.cpu_auto_label.setObjectName("reportedValue")
-        auto_layout.addWidget(self.cpu_temp_label)
-        auto_layout.addWidget(self.cpu_auto_label)
-
-        self.gpu_temp_label = QLabel("GPU temperature: --.- C")
-        self.gpu_temp_label.setObjectName("temperatureValue")
-        self.gpu_auto_label = QLabel("Target: --%")
-        self.gpu_auto_label.setObjectName("reportedValue")
-        auto_layout.addWidget(self.gpu_temp_label)
-        auto_layout.addWidget(self.gpu_auto_label)
-
-        curve_title = QLabel("Automatic curve")
-        curve_title.setObjectName("fanName")
-        auto_layout.addWidget(curve_title)
-        curve_text = "   ".join(f"{temp} C: {duty}%" for temp, duty in AUTO_CURVE)
-        curve_label = QLabel(curve_text)
-        curve_label.setWordWrap(True)
-        curve_label.setObjectName("statusText")
-        auto_layout.addWidget(curve_label)
-        self.source_label = QLabel("CPU: PawnIO Ryzen SMN | GPU: NVIDIA driver")
-        self.source_label.setWordWrap(True)
-        self.source_label.setObjectName("statusText")
-        auto_layout.addWidget(self.source_label)
-        auto_layout.addStretch()
+        self._update_mode_panels()
 
     def _fan_row(
         self, parent_layout: QVBoxLayout, title: str
-    ) -> tuple[QSlider, QSpinBox, QLabel]:
+    ) -> tuple[QSlider, QSpinBox]:
         labels = QHBoxLayout()
         name = QLabel(title)
         name.setObjectName("fanName")
         labels.addWidget(name)
-        labels.addStretch()
-        reported = QLabel("Reported: --%")
-        reported.setObjectName("reportedValue")
-        labels.addWidget(reported)
         parent_layout.addLayout(labels)
 
         controls = QHBoxLayout()
@@ -248,7 +352,37 @@ class FanControlWindow(QMainWindow):
         spin.editingFinished.connect(
             lambda: spin.setValue(((spin.value() + 2) // 5) * 5)
         )
-        return slider, spin, reported
+        return slider, spin
+
+    def _temperature_row(
+        self, parent_layout: QVBoxLayout, title: str, value: int
+    ) -> tuple[QSlider, QSpinBox]:
+        label = QLabel(title)
+        label.setObjectName("fanName")
+        parent_layout.addWidget(label)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(14)
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(0, 100)
+        slider.setSingleStep(1)
+        slider.setPageStep(5)
+        slider.setTickInterval(10)
+        slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        slider.setValue(value)
+        controls.addWidget(slider, 1)
+
+        spin = QSpinBox()
+        spin.setRange(0, 100)
+        spin.setSuffix(" C")
+        spin.setFixedWidth(88)
+        spin.setValue(value)
+        controls.addWidget(spin)
+        parent_layout.addLayout(controls)
+
+        slider.valueChanged.connect(spin.setValue)
+        spin.valueChanged.connect(slider.setValue)
+        return slider, spin
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
@@ -268,6 +402,10 @@ class FanControlWindow(QMainWindow):
                 font-size: 15px;
                 font-weight: 600;
             }
+            QLabel#sectionTitle {
+                font-size: 18px;
+                font-weight: 650;
+            }
             QLabel#temperatureValue {
                 font-size: 19px;
                 font-weight: 650;
@@ -278,6 +416,15 @@ class FanControlWindow(QMainWindow):
             }
             QFrame#divider {
                 color: #34393e;
+            }
+            QFrame#panel {
+                background: #1d2024;
+                border: 1px solid #34393e;
+                border-radius: 7px;
+            }
+            QFrame#panel QLabel {
+                background: transparent;
+                border: none;
             }
             QSlider {
                 min-height: 34px;
@@ -338,22 +485,6 @@ class FanControlWindow(QMainWindow):
                 color: #727980;
                 background: #24272a;
             }
-            QTabWidget::pane {
-                border: 1px solid #34393e;
-                border-radius: 5px;
-            }
-            QTabBar::tab {
-                min-width: 100px;
-                min-height: 34px;
-                padding: 0 12px;
-                background: #22262a;
-                border: 1px solid #34393e;
-            }
-            QTabBar::tab:selected {
-                color: #07130f;
-                background: #25b99a;
-                border-color: #25b99a;
-            }
             """
         )
 
@@ -364,8 +495,10 @@ class FanControlWindow(QMainWindow):
     def _set_busy(self, busy: bool, message: str | None = None) -> None:
         self._busy = busy
         self.refresh_button.setEnabled(not busy)
-        self.apply_button.setEnabled(not busy)
         self.boost_button.setEnabled(not busy)
+        self.manual_mode_button.setEnabled(not busy)
+        self.auto_mode_button.setEnabled(not busy)
+        self._update_mode_panels()
         if message:
             self._set_status(message)
 
@@ -384,14 +517,53 @@ class FanControlWindow(QMainWindow):
             f"{self._status_message} (last updated {seconds} {unit} ago)"
         )
 
-    def _mode_changed(self, index: int) -> None:
-        if self.tabs.widget(index) is self.auto_tab:
+    def _mode_changed(self, mode_id: int) -> None:
+        self._update_mode_panels()
+        if mode_id == 1:
             self._auto_backup_needed = True
             self._auto_timer.start()
             QTimer.singleShot(0, self.run_auto_cycle)
         else:
             self._auto_timer.stop()
             self._set_status("Manual mode | Apply speeds when ready")
+            QTimer.singleShot(0, self.refresh_telemetry)
+
+    def _update_mode_panels(self) -> None:
+        automatic = self.auto_mode_button.isChecked()
+        self.auto_panel.setEnabled(automatic and not self._busy)
+        self.manual_panel.setEnabled(not automatic and not self._busy)
+
+    def _set_auto_temperatures(self, minimum_temp: int, maximum_temp: int) -> None:
+        minimum_temp = max(0, min(100, minimum_temp))
+        maximum_temp = max(minimum_temp, min(100, maximum_temp))
+        self._curve_syncing = True
+        try:
+            self.min_temp_slider.setValue(minimum_temp)
+            self.min_temp_spin.setValue(minimum_temp)
+            self.max_temp_slider.setValue(maximum_temp)
+            self.max_temp_spin.setValue(maximum_temp)
+        finally:
+            self._curve_syncing = False
+        self.curve_graph.set_temperatures(minimum_temp, maximum_temp)
+
+    def _minimum_temp_changed(self, value: int) -> None:
+        if self._curve_syncing:
+            return
+        maximum_temp = self.max_temp_spin.value()
+        if value > maximum_temp:
+            maximum_temp = value
+        self._set_auto_temperatures(value, maximum_temp)
+
+    def _maximum_temp_changed(self, value: int) -> None:
+        if self._curve_syncing:
+            return
+        minimum_temp = self.min_temp_spin.value()
+        if value < minimum_temp:
+            minimum_temp = value
+        self._set_auto_temperatures(minimum_temp, value)
+
+    def _reset_auto_temperatures(self) -> None:
+        self._set_auto_temperatures(DEFAULT_MIN_FAN_TEMP, DEFAULT_MAX_FAN_TEMP)
 
     def _run(
         self,
@@ -441,19 +613,44 @@ class FanControlWindow(QMainWindow):
             self._syncing = False
         self._dirty = False
         self._show_telemetry(result["telemetry"])
+        QTimer.singleShot(0, self.refresh_telemetry)
 
     def refresh_telemetry(self) -> None:
         if self._busy or self._telemetry_inflight or self._auto_inflight or self._closing:
             return
         self._telemetry_inflight = True
-        worker = Worker(self._service.read_telemetry)
+        read_sensor_values = self.manual_mode_button.isChecked()
+
+        def operation() -> dict[str, Any]:
+            result: dict[str, Any] = {
+                "telemetry": self._service.read_telemetry(),
+                "temperatures": None,
+                "temperature_error": None,
+            }
+            if read_sensor_values:
+                try:
+                    result["temperatures"] = read_temperatures()
+                except Exception as exc:
+                    result["temperature_error"] = str(exc)
+            return result
+
+        worker = Worker(operation)
         self._workers.add(worker)
 
         def complete(result: dict[str, Any]) -> None:
             self._workers.discard(worker)
             self._telemetry_inflight = False
             if not self._closing:
-                self._show_telemetry(result)
+                self._show_telemetry(result["telemetry"])
+                temperatures = result["temperatures"]
+                if temperatures is not None:
+                    self._show_temperatures(temperatures)
+                elif result["temperature_error"]:
+                    self.cpu_temp_label.setText("CPU temperature: unavailable")
+                    self.gpu_temp_label.setText("GPU temperature: unavailable")
+                    self.source_label.setText(
+                        f"Sensor error: {result['temperature_error']}"
+                    )
 
         def failed(details: str) -> None:
             self._workers.discard(worker)
@@ -466,12 +663,23 @@ class FanControlWindow(QMainWindow):
         self._pool.start(worker)
 
     def _show_telemetry(self, telemetry: dict[str, Any]) -> None:
-        self.cpu_reported.setText(f"Reported: {telemetry.get('CpuFanDuty', '--')}%")
-        self.gpu_reported.setText(f"Reported: {telemetry.get('GpuFanDuty', '--')}%")
-        if self._table_name and self.tabs.currentWidget() is self.manual_tab:
+        self.cpu_reported.setText(
+            f"CPU fan reported: {telemetry.get('CpuFanDuty', '--')}%"
+        )
+        self.gpu_reported.setText(
+            f"GPU fan reported: {telemetry.get('GpuFanDuty', '--')}%"
+        )
+        if self._table_name and self.manual_mode_button.isChecked():
             self._set_status(
                 f"Connected | Active table: {self._table_name}", updated=True
             )
+
+    def _show_temperatures(self, temperatures: Temperatures) -> None:
+        self.cpu_temp_label.setText(f"CPU temperature: {temperatures.cpu_c:.1f} C")
+        self.gpu_temp_label.setText(f"GPU temperature: {temperatures.gpu_c:.1f} C")
+        self.source_label.setText(
+            f"CPU: {temperatures.cpu_source} | GPU: {temperatures.gpu_source}"
+        )
 
     def _confirm_low_values(self, cpu: int, gpu: int) -> bool:
         low_values = []
@@ -519,21 +727,25 @@ class FanControlWindow(QMainWindow):
         )
 
     @staticmethod
-    def _auto_target(temperature: float) -> int:
-        if temperature <= AUTO_CURVE[0][0]:
-            return AUTO_CURVE[0][1]
-        for (low_temp, low_duty), (high_temp, high_duty) in zip(
-            AUTO_CURVE, AUTO_CURVE[1:]
-        ):
-            if temperature <= high_temp:
-                position = (temperature - low_temp) / (high_temp - low_temp)
-                duty = low_duty + position * (high_duty - low_duty)
-                return max(30, min(100, round(duty / 5) * 5))
-        return AUTO_CURVE[-1][1]
+    def _auto_target(
+        temperature: float,
+        minimum_temp: int = DEFAULT_MIN_FAN_TEMP,
+        maximum_temp: int = DEFAULT_MAX_FAN_TEMP,
+    ) -> int:
+        if maximum_temp <= minimum_temp:
+            return MAX_AUTO_DUTY if temperature >= maximum_temp else MIN_AUTO_DUTY
+        if temperature <= minimum_temp:
+            return MIN_AUTO_DUTY
+        if temperature >= maximum_temp:
+            return MAX_AUTO_DUTY
+        position = (temperature - minimum_temp) / (maximum_temp - minimum_temp)
+        duty = MIN_AUTO_DUTY + position * (MAX_AUTO_DUTY - MIN_AUTO_DUTY)
+        rounded_duty = int((duty + 2.5) // 5) * 5
+        return max(MIN_AUTO_DUTY, min(MAX_AUTO_DUTY, rounded_duty))
 
     def run_auto_cycle(self) -> None:
         if (
-            self.tabs.currentWidget() is not self.auto_tab
+            not self.auto_mode_button.isChecked()
             or self._busy
             or self._telemetry_inflight
             or self._auto_inflight
@@ -543,11 +755,13 @@ class FanControlWindow(QMainWindow):
 
         self._auto_inflight = True
         make_backup = self._auto_backup_needed
+        minimum_temp = self.min_temp_spin.value()
+        maximum_temp = self.max_temp_spin.value()
 
         def operation() -> dict[str, Any]:
             temperatures = read_temperatures()
             hottest = max(temperatures.cpu_c, temperatures.gpu_c)
-            target = self._auto_target(hottest)
+            target = self._auto_target(hottest, minimum_temp, maximum_temp)
             applied = self._service.apply_manual(
                 target, target, create_backup=make_backup
             )
@@ -568,17 +782,8 @@ class FanControlWindow(QMainWindow):
             self._auto_backup_needed = False
             temperatures: Temperatures = result["temperatures"]
             applied = result["applied"]
-            self.cpu_temp_label.setText(
-                f"CPU temperature: {temperatures.cpu_c:.1f} C"
-            )
-            self.gpu_temp_label.setText(
-                f"GPU temperature: {temperatures.gpu_c:.1f} C"
-            )
-            self.cpu_auto_label.setText(f"Target: {applied['cpu']}%")
-            self.gpu_auto_label.setText(f"Target: {applied['gpu']}%")
-            self.source_label.setText(
-                f"CPU: {temperatures.cpu_source} | GPU: {temperatures.gpu_source}"
-            )
+            self._show_temperatures(temperatures)
+            self.auto_target_label.setText(f"Shared target: {applied['cpu']}%")
             self._set_status(
                 f"Auto mode | Max temperature {result['hottest']:.1f} C",
                 updated=True,
