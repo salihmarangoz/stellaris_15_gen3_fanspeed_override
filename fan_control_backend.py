@@ -19,6 +19,7 @@ from fan_control_ipc import (
     MAX_MESSAGE_BYTES,
     RESTART_COOLDOWN_SECONDS,
     endpoint_path,
+    is_administrator,
     launch_component,
     runtime_directory,
 )
@@ -327,6 +328,8 @@ def _acquire_process_lock() -> tuple[Any, Path]:
 
 
 def run_backend(*, start_frontend: bool = True) -> None:
+    if not is_administrator():
+        raise PermissionError("The fan-control backend requires administrator access")
     lock_handle, _ = _acquire_process_lock()
     controller = BackendController()
     token = secrets.token_hex(32)

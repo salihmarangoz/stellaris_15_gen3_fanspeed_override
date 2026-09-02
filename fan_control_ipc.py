@@ -1,3 +1,5 @@
+import base64
+import ctypes
 import json
 import os
 import socket
@@ -47,12 +49,75 @@ def component_command(role: str, *extra_arguments: str) -> list[str]:
     return [str(python), str(launcher), role_argument, *extra_arguments]
 
 
-def launch_component(role: str, *extra_arguments: str) -> subprocess.Popen[bytes]:
+def is_administrator() -> bool:
+    if os.name == "nt":
+        try:
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except (AttributeError, OSError):
+            return False
+    get_effective_user_id = getattr(os, "geteuid", None)
+    return bool(get_effective_user_id and get_effective_user_id() == 0)
+
+
+def _launch_elevated(command: list[str]) -> None:
+    result = ctypes.windll.shell32.ShellExecuteW(
+        None,
+        "runas",
+        command[0],
+        subprocess.list2cmdline(command[1:]),
+        str(Path(__file__).resolve().parent),
+        0,
+    )
+    if result <= 32:
+        raise OSError(f"Windows could not elevate the backend (error {result})")
+
+
+def _powershell_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _launch_unelevated(command: list[str]) -> None:
+    executable = _powershell_literal(command[0])
+    arguments = _powershell_literal(subprocess.list2cmdline(command[1:]))
+    working_directory = _powershell_literal(str(Path(__file__).resolve().parent))
+    script = (
+        "$shell = New-Object -ComObject Shell.Application; "
+        f"$shell.ShellExecute({executable}, {arguments}, {working_directory}, 'open', 1)"
+    )
+    encoded_script = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    subprocess.Popen(
+        [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-EncodedCommand",
+            encoded_script,
+        ],
+        cwd=Path(__file__).resolve().parent,
+        close_fds=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+
+def launch_component(
+    role: str, *extra_arguments: str
+) -> subprocess.Popen[bytes] | None:
+    command = component_command(role, *extra_arguments)
+    if os.name == "nt" and role == "backend" and not is_administrator():
+        _launch_elevated(command)
+        return None
+    if os.name == "nt" and role == "frontend" and is_administrator():
+        _launch_unelevated(command)
+        return None
+
     creation_flags = 0
     if os.name == "nt" and role == "backend":
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     return subprocess.Popen(
-        component_command(role, *extra_arguments),
+        command,
         cwd=Path(__file__).resolve().parent,
         close_fds=True,
         creationflags=creation_flags,

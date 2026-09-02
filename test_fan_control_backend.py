@@ -6,9 +6,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from fan_control_backend import BackendController, BackendServer
+from fan_control_backend import BackendController, BackendServer, run_backend
 from fan_control_common import auto_target
-from fan_control_ipc import BackendClient
+from fan_control_ipc import BackendClient, component_command, launch_component
 from temperature_service import Temperatures
 
 
@@ -106,6 +106,31 @@ class BackendSafetyTests(unittest.TestCase):
 
 
 class IpcTests(unittest.TestCase):
+    def test_normal_frontend_requests_an_elevated_backend(self) -> None:
+        expected = component_command("backend", "--no-frontend")
+        with (
+            patch("fan_control_ipc.os.name", "nt"),
+            patch("fan_control_ipc.is_administrator", return_value=False),
+            patch("fan_control_ipc._launch_elevated") as elevated,
+        ):
+            self.assertIsNone(launch_component("backend", "--no-frontend"))
+        elevated.assert_called_once_with(expected)
+
+    def test_elevated_backend_requests_a_normal_frontend(self) -> None:
+        expected = component_command("frontend")
+        with (
+            patch("fan_control_ipc.os.name", "nt"),
+            patch("fan_control_ipc.is_administrator", return_value=True),
+            patch("fan_control_ipc._launch_unelevated") as unelevated,
+        ):
+            self.assertIsNone(launch_component("frontend"))
+        unelevated.assert_called_once_with(expected)
+
+    def test_backend_refuses_to_run_without_administrator_access(self) -> None:
+        with patch("fan_control_backend.is_administrator", return_value=False):
+            with self.assertRaises(PermissionError):
+                run_backend(start_frontend=False)
+
     def test_authenticated_loopback_request(self) -> None:
         class PingController:
             def dispatch(self, command: str, arguments: dict[str, object]) -> str:

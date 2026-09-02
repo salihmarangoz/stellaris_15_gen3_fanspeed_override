@@ -46,7 +46,7 @@ the inactive section is grayed out. the sensor gauges and OEM **Fan Boost 100%**
 
 ## frontend and backend
 
-the frontend and backend are separate processes. if the PySide6 frontend crashes or cannot start, the backend keeps running Auto mode and tries to start the frontend again. if the backend crashes, the frontend tries to start it again and restores the selected mode when the connection comes back.
+the frontend and backend are separate processes. the frontend runs as a normal user and does not need administrator access. only the hardware backend asks for administrator access. if the PySide6 frontend crashes or cannot start, the backend keeps running Auto mode and tries to start a non-administrator frontend again. if the backend crashes, the frontend asks Windows to restart it as administrator and restores the selected mode when the connection comes back.
 
 restart attempts have a 60-second cooldown on both sides, so they cannot create a fast crash loop. closing the frontend normally tells the backend not to reopen it. the backend stays alive, including when Auto mode is active.
 
@@ -58,7 +58,7 @@ the two processes only communicate through an authenticated local connection. th
 - the compatible OEM Control Center service installed and running
 - Python 3.11 or newer when running from source
 - the signed PawnIO driver
-- administrator access
+- administrator access for the hardware backend
 - an NVIDIA GPU with a working `nvidia-smi.exe`
 
 ## run it from source
@@ -69,7 +69,7 @@ py -3 -m venv .venv
 .\run_fan_control_gui.cmd
 ```
 
-the launcher runs `setup_pawnio.ps1`. it installs PawnIO if needed, downloads the pinned and SHA-256-checked AMD sensor module, asks for administrator access, and then starts the GUI. Core Temp is not needed.
+the launcher runs `setup_pawnio.ps1`. it installs PawnIO if needed, downloads the pinned and SHA-256-checked AMD sensor module, and starts the GUI as a normal user. the PawnIO installer may show its own one-time setup prompt; during normal use, Windows asks for administrator access only when the hardware backend starts. Core Temp is not needed.
 
 the command-line write commands are dry runs unless `--apply` is added:
 
@@ -89,7 +89,7 @@ powershell.exe -ExecutionPolicy Bypass -File .\build_exe.ps1
 
 the script creates the virtual environment if needed, prepares PawnIO, installs the build requirements, and writes `dist\StellarisFanControl.exe`. the AMD sensor module and `stellaris15gen3.css` are bundled into the exe. the signed PawnIO driver and OEM Control Center still have to be installed separately.
 
-the exe asks for administrator access when it starts. generated executables, PyInstaller files, downloaded modules, virtual environments, caches, and fan backups are ignored by git.
+the exe itself has no administrator manifest, so the frontend stays non-administrator. Windows asks for administrator access when the exe starts its backend role. generated executables, PyInstaller files, downloaded modules, virtual environments, caches, and fan backups are ignored by git.
 
 ## recovery
 

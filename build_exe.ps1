@@ -30,7 +30,6 @@ try {
         --clean `
         --onefile `
         --windowed `
-        --uac-admin `
         --add-data "$pawnModule;pawnio" `
         --add-data "$styleSheet;." `
         --name StellarisFanControl `

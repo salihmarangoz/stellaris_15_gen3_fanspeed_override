@@ -50,7 +50,7 @@ Keep protocol, service ownership, sensor acquisition, and presentation in these 
 - Ryzen temperature is read from SMN register `0x00059800` through PawnIO's restricted `AMDFamily17` module.
 - Decode bits 31:21 in 0.125 C units and apply the 49 C range adjustment when the range/Tj selector flags indicate it.
 - Use the global `Access_PCI` mutex around the SMN operation.
-- PawnIO access requires administrator rights. Source and packaged launchers must preserve elevation behavior.
+- PawnIO access requires administrator rights. Only the backend may run elevated; source and packaged frontends must remain at normal user integrity. An elevated backend must launch frontend replacements through the non-elevated Windows shell.
 - The AMD module URL, commit, and SHA-256 in `setup_pawnio.ps1` are a supply-chain boundary. Do not update them without validating the new module on the target laptop and updating `THIRD_PARTY_NOTICES.md`.
 - Do not reintroduce Core Temp, ACPI thermal-zone fallback, WinRing0, or a Control Center temperature fallback without explicit user direction and hardware validation.
 
