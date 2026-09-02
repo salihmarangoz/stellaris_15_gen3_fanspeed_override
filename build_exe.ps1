@@ -34,7 +34,7 @@ try {
         --add-data "$pawnModule;pawnio" `
         --add-data "$styleSheet;." `
         --name StellarisFanControl `
-        (Join-Path $root 'fan_control_gui.py')
+        (Join-Path $root 'stellaris15gen3.py')
     if ($LASTEXITCODE -ne 0) {
         throw "PyInstaller failed with exit code $LASTEXITCODE"
     }

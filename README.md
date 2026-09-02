@@ -23,7 +23,9 @@ i built and tested it for one Stellaris 15 Gen3 / XMG-Uniwill-style laptop with 
 - Manual mode has separate CPU and GPU fan controls in 5% steps. anything below 30% needs confirmation.
 - Automatic mode checks every 15 seconds, uses the hotter value from `max(CPU, GPU)`, and sends one shared target to both fans.
 - the sensor panel shows CPU/GPU temperature and reported CPU/GPU fan duty gauges.
-- only one GUI and one Control Center client are allowed at a time.
+- the backend is a separate process and is the only process allowed to read hardware sensors or talk to Control Center.
+- the frontend only displays values and sends requests to the backend.
+- only one frontend, one backend, and one Control Center client are allowed at a time.
 
 if either temperature is missing, zero, malformed, or not believable, Auto mode stops that cycle before writing a fan target.
 
@@ -36,11 +38,19 @@ the two temperature points are adjustable from 0 to 100 C:
 | 40 C or below | 30% |
 | 80 C or above | 100% |
 
-the app fills in the values between those points with a straight line and rounds the result to the nearest 5%. Auto mode never asks for less than 30%, and it always asks for 100% at 80 C or above with the default settings.
+the app fills in the values between those points with a straight line and rounds the result to the nearest 5%. Auto mode never asks for less than 30%. the 80 C safety cap always forces 100%, even if the maximum-temperature slider is set higher.
 
 selecting **Automatic** starts a cycle immediately and then repeats every 15 seconds. selecting **Manual** stops future automatic cycles. Manual is the default when the app opens.
 
 the inactive section is grayed out. the sensor gauges and OEM **Fan Boost 100%** fallback stay available in both modes.
+
+## frontend and backend
+
+the frontend and backend are separate processes. if the PySide6 frontend crashes or cannot start, the backend keeps running Auto mode and tries to start the frontend again. if the backend crashes, the frontend tries to start it again and restores the selected mode when the connection comes back.
+
+restart attempts have a 60-second cooldown on both sides, so they cannot create a fast crash loop. closing the frontend normally tells the backend not to reopen it. the backend stays alive, including when Auto mode is active.
+
+the two processes only communicate through an authenticated local connection. the backend endpoint and random access token are stored under `%LOCALAPPDATA%\StellarisFanControl` for the current user.
 
 ## requirements
 

@@ -19,9 +19,13 @@ This repository contains experimental, hardware-specific fan control for a Stell
 ## Architecture
 
 - `fan_control.py`: low-level MQTT protocol, curve transformation, backup/restore CLI, and dry-run write commands.
-- `fan_control_service.py`: process-wide singleton that owns the one persistent Control Center client and serializes synchronous operations.
+- `fan_control_service.py`: backend-process singleton that owns the one persistent Control Center client and serializes synchronous operations.
 - `temperature_service.py`: independent CPU/GPU temperature acquisition. It must not import or query the Control Center service.
-- `fan_control_gui.py`: PySide6 UI, tab-driven mode state, timers, worker lifecycle, and single-GUI enforcement.
+- `fan_control_backend.py`: PySide-free backend process, automatic control scheduler, IPC server, and frontend watchdog.
+- `fan_control_ipc.py`: authenticated loopback IPC client plus process launch and 60-second restart-cooldown helpers.
+- `fan_control_common.py`: pure automatic-curve constants and calculation shared by the two processes.
+- `fan_control_gui.py`: PySide6 frontend, display timers, worker lifecycle, backend watchdog, and single-GUI enforcement.
+- `stellaris15gen3.py`: source and packaged process-role launcher.
 - `fan_control_probe.py`: read-only MQTT diagnostic utility.
 - `setup_pawnio.ps1`: installs PawnIO and downloads the pinned, hash-verified AMD module.
 - `build_exe.ps1`: reproducible PyInstaller entry point.
@@ -31,10 +35,13 @@ Keep protocol, service ownership, sensor acquisition, and presentation in these 
 ## Concurrency and modes
 
 - Only one GUI instance may run. Preserve the `QLocalServer` guard.
-- Only one `ControlCenterService` and one MQTT client may exist per process.
-- Control Center operations are synchronous but must run off the GUI thread.
+- Only the backend may import `ControlCenterService`, read hardware temperatures, or perform fan writes.
+- Only one backend, one `ControlCenterService`, and one MQTT client may run for the current user.
+- Backend requests are synchronous but must run off the GUI thread.
 - Keep the GUI worker pool serialized with at most one operation running. Timer callbacks must skip while busy; they must not enqueue an unbounded backlog.
-- Selecting Auto starts an immediate cycle and a non-overlapping 15-second timer. Selecting Manual stops future Auto cycles.
+- Selecting Auto tells the backend to start an immediate cycle and a non-overlapping 15-second schedule. Selecting Manual stops future Auto cycles in the backend.
+- The backend must keep Auto mode running if the frontend exits unexpectedly. Each process may attempt to restart the other no more than once per 60 seconds.
+- An intentional frontend close must detach from the backend so the watchdog does not reopen it.
 - Telemetry refreshes must not overwrite Auto status or block interaction.
 - Relative status age, such as `(last updated 7 seconds ago)`, is a display-only timer and must not trigger sensor or MQTT reads.
 
@@ -52,7 +59,7 @@ Keep protocol, service ownership, sensor acquisition, and presentation in these 
 Use the existing virtual environment when available:
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile fan_control.py fan_control_gui.py fan_control_service.py temperature_service.py
+.\.venv\Scripts\python.exe -m py_compile fan_control.py fan_control_common.py fan_control_ipc.py fan_control_backend.py fan_control_gui.py fan_control_service.py stellaris15gen3.py temperature_service.py
 ```
 
 For GUI-only checks, use Qt's offscreen platform and avoid selecting Auto. Read-only live temperature checks require an elevated process and PawnIO. Clearly report when a check was not run because elevation or the target hardware was unavailable.

@@ -23,17 +23,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fan_control_service import ControlCenterService
-from temperature_service import Temperatures, read_temperatures
+from fan_control_common import (
+    DEFAULT_MAX_FAN_TEMP,
+    DEFAULT_MIN_FAN_TEMP,
+    MAX_AUTO_DUTY,
+    MIN_AUTO_DUTY,
+    auto_target,
+)
+from fan_control_ipc import (
+    BackendClient,
+    RESTART_COOLDOWN_SECONDS,
+    ensure_backend,
+    launch_component,
+)
 
 
 INSTANCE_SERVER_NAME = "stellaris15gen3.fan-control"
 STYLESHEET_NAME = "stellaris15gen3.css"
-AUTO_INTERVAL_MS = 15000
-DEFAULT_MIN_FAN_TEMP = 40
-DEFAULT_MAX_FAN_TEMP = 80
-MIN_AUTO_DUTY = 30
-MAX_AUTO_DUTY = 100
 
 
 class FanCurveGraph(QWidget):
@@ -82,16 +88,24 @@ class FanCurveGraph(QWidget):
         curve_pen = QPen(curve_color, 3)
         painter.setPen(curve_pen)
         points = [
-            point(0, MIN_AUTO_DUTY),
-            point(self._minimum_temp, MIN_AUTO_DUTY),
-            point(self._maximum_temp, MAX_AUTO_DUTY),
-            point(100, MAX_AUTO_DUTY),
+            point(
+                temperature,
+                auto_target(
+                    temperature, self._minimum_temp, self._maximum_temp
+                ),
+            )
+            for temperature in range(101)
         ]
         for start, end in zip(points, points[1:]):
             painter.drawLine(*start, *end)
 
         painter.setBrush(curve_color)
-        for x, y in points[1:3]:
+        marker_temperatures = {
+            self._minimum_temp,
+            min(self._maximum_temp, 80),
+        }
+        for temperature in marker_temperatures:
+            x, y = points[temperature]
             painter.drawEllipse(x - 4, y - 4, 8, 8)
 
 
@@ -298,15 +312,16 @@ class FanControlWindow(QMainWindow):
 
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(1)
-        self._service = ControlCenterService.instance()
+        self._backend = BackendClient()
         self._busy = False
         self._telemetry_inflight = False
+        self._backend_check_inflight = False
+        self._backend_offline = False
+        self._last_backend_restart = 0.0
         self._closing = False
         self._syncing = False
         self._curve_syncing = False
         self._dirty = False
-        self._auto_inflight = False
-        self._auto_backup_needed = True
         self._table_name = ""
         self._status_message = "Connecting to Control Center..."
         self._status_updated_at: float | None = None
@@ -320,14 +335,15 @@ class FanControlWindow(QMainWindow):
         self._telemetry_timer.timeout.connect(self.refresh_telemetry)
         self._telemetry_timer.start()
 
-        self._auto_timer = QTimer(self)
-        self._auto_timer.setInterval(AUTO_INTERVAL_MS)
-        self._auto_timer.timeout.connect(self.run_auto_cycle)
-
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(1000)
         self._status_timer.timeout.connect(self._refresh_status_age)
         self._status_timer.start()
+
+        self._backend_watchdog_timer = QTimer(self)
+        self._backend_watchdog_timer.setInterval(5000)
+        self._backend_watchdog_timer.timeout.connect(self.check_backend)
+        self._backend_watchdog_timer.start()
         QTimer.singleShot(0, self.load_state)
 
     def _build_ui(self) -> None:
@@ -375,7 +391,7 @@ class FanControlWindow(QMainWindow):
         auto_layout.addWidget(auto_title)
         auto_help = QLabel(
             "Both fans follow the hottest sensor. The target rises from 30% to "
-            "100% between these temperatures."
+            "100% between these temperatures. The 80 C safety cap always forces 100%."
         )
         auto_help.setWordWrap(True)
         auto_help.setObjectName("statusText")
@@ -390,6 +406,10 @@ class FanControlWindow(QMainWindow):
         self.min_temp_spin.valueChanged.connect(self._minimum_temp_changed)
         self.max_temp_slider.valueChanged.connect(self._maximum_temp_changed)
         self.max_temp_spin.valueChanged.connect(self._maximum_temp_changed)
+        self.min_temp_slider.sliderReleased.connect(self._configure_auto)
+        self.min_temp_spin.editingFinished.connect(self._configure_auto)
+        self.max_temp_slider.sliderReleased.connect(self._configure_auto)
+        self.max_temp_spin.editingFinished.connect(self._configure_auto)
 
         reset_row = QHBoxLayout()
         reset_row.addStretch()
@@ -575,14 +595,27 @@ class FanControlWindow(QMainWindow):
 
     def _mode_changed(self, manual: bool) -> None:
         self._update_mode_panels()
-        if not manual:
-            self._auto_backup_needed = True
-            self._auto_timer.start()
-            QTimer.singleShot(0, self.run_auto_cycle)
-        else:
-            self._auto_timer.stop()
-            self._set_status("Manual mode | Apply speeds when ready")
+        minimum_temp = self.min_temp_spin.value()
+        maximum_temp = self.max_temp_spin.value()
+
+        def complete(result: dict[str, Any]) -> None:
+            self._show_backend_state(result)
+            if manual:
+                self._set_status("Manual mode | Apply speeds when ready")
+            else:
+                self._set_status("Automatic mode | Backend control started")
             QTimer.singleShot(0, self.refresh_telemetry)
+
+        self._run(
+            lambda: self._backend.request(
+                "set_mode",
+                automatic=not manual,
+                minimum_temp=minimum_temp,
+                maximum_temp=maximum_temp,
+            ),
+            complete,
+            "Switching control mode...",
+        )
 
     def _update_mode_panels(self) -> None:
         automatic = not self.mode_toggle.is_manual()
@@ -620,6 +653,22 @@ class FanControlWindow(QMainWindow):
 
     def _reset_auto_temperatures(self) -> None:
         self._set_auto_temperatures(DEFAULT_MIN_FAN_TEMP, DEFAULT_MAX_FAN_TEMP)
+        self._configure_auto()
+
+    def _configure_auto(self) -> None:
+        if self.mode_toggle.is_manual() or self._curve_syncing:
+            return
+        minimum_temp = self.min_temp_spin.value()
+        maximum_temp = self.max_temp_spin.value()
+        self._run(
+            lambda: self._backend.request(
+                "configure_auto",
+                minimum_temp=minimum_temp,
+                maximum_temp=maximum_temp,
+            ),
+            self._show_backend_state,
+            "Updating automatic curve...",
+        )
 
     def _run(
         self,
@@ -644,7 +693,7 @@ class FanControlWindow(QMainWindow):
             self._workers.discard(worker)
             if self._closing:
                 return
-            self._set_busy(False, "Control Center communication failed")
+            self._set_busy(False, "Fan-control backend communication failed")
             QMessageBox.critical(self, "Fan control error", details)
 
         worker.signals.completed.connect(complete)
@@ -652,11 +701,16 @@ class FanControlWindow(QMainWindow):
         self._pool.start(worker)
 
     def load_state(self) -> None:
-        self._run(self._service.load_state, self._show_state, "Reading fan state...")
+        self._run(
+            lambda: self._backend.request("load_state"),
+            self._show_state,
+            "Reading fan state...",
+        )
 
     def _show_state(self, result: dict[str, Any]) -> None:
         status = result["status"]
         curve = result["curve"]
+        backend = result["backend"]
         self._table_name = str(status["FAN_TableName"])
         self._syncing = True
         try:
@@ -665,32 +719,29 @@ class FanControlWindow(QMainWindow):
             self.boost_button.blockSignals(True)
             self.boost_button.setChecked(str(status["FanBoostEnable"]) == "1")
             self.boost_button.blockSignals(False)
+            self.mode_toggle.blockSignals(True)
+            self.mode_toggle.setChecked(not bool(backend["automatic"]))
+            self.mode_toggle.blockSignals(False)
+            self._set_auto_temperatures(
+                int(backend["minimum_temp"]), int(backend["maximum_temp"])
+            )
         finally:
             self._syncing = False
+        self._update_mode_panels()
         self._dirty = False
         self._show_telemetry(result["telemetry"])
+        self._show_backend_state(backend)
+        if result["temperatures"] is not None:
+            self._show_temperatures(result["temperatures"])
+        elif result["temperature_error"]:
+            self._show_temperature_error(result["temperature_error"])
         QTimer.singleShot(0, self.refresh_telemetry)
 
     def refresh_telemetry(self) -> None:
-        if self._busy or self._telemetry_inflight or self._auto_inflight or self._closing:
+        if self._busy or self._telemetry_inflight or self._closing:
             return
         self._telemetry_inflight = True
-        read_sensor_values = self.mode_toggle.is_manual()
-
-        def operation() -> dict[str, Any]:
-            result: dict[str, Any] = {
-                "telemetry": self._service.read_telemetry(),
-                "temperatures": None,
-                "temperature_error": None,
-            }
-            if read_sensor_values:
-                try:
-                    result["temperatures"] = read_temperatures()
-                except Exception as exc:
-                    result["temperature_error"] = str(exc)
-            return result
-
-        worker = Worker(operation)
+        worker = Worker(lambda: self._backend.request("read_telemetry"))
         self._workers.add(worker)
 
         def complete(result: dict[str, Any]) -> None:
@@ -698,15 +749,12 @@ class FanControlWindow(QMainWindow):
             self._telemetry_inflight = False
             if not self._closing:
                 self._show_telemetry(result["telemetry"])
+                self._show_backend_state(result["backend"])
                 temperatures = result["temperatures"]
                 if temperatures is not None:
                     self._show_temperatures(temperatures)
                 elif result["temperature_error"]:
-                    self.cpu_temp_gauge.set_value(None)
-                    self.gpu_temp_gauge.set_value(None)
-                    self.source_label.setText(
-                        f"Sensor error: {result['temperature_error']}"
-                    )
+                    self._show_temperature_error(result["temperature_error"])
 
         def failed(details: str) -> None:
             self._workers.discard(worker)
@@ -735,12 +783,34 @@ class FanControlWindow(QMainWindow):
                 f"Connected | Active table: {self._table_name}", updated=True
             )
 
-    def _show_temperatures(self, temperatures: Temperatures) -> None:
-        self.cpu_temp_gauge.set_value(temperatures.cpu_c)
-        self.gpu_temp_gauge.set_value(temperatures.gpu_c)
+    def _show_temperatures(self, temperatures: dict[str, Any]) -> None:
+        self.cpu_temp_gauge.set_value(float(temperatures["cpu_c"]))
+        self.gpu_temp_gauge.set_value(float(temperatures["gpu_c"]))
         self.source_label.setText(
-            f"CPU: {temperatures.cpu_source} | GPU: {temperatures.gpu_source}"
+            f"CPU: {temperatures['cpu_source']} | GPU: {temperatures['gpu_source']}"
         )
+
+    def _show_temperature_error(self, error: str) -> None:
+        self.cpu_temp_gauge.set_value(None)
+        self.gpu_temp_gauge.set_value(None)
+        self.source_label.setText(f"Sensor error: {error}")
+
+    def _show_backend_state(self, backend: dict[str, Any]) -> None:
+        target = backend.get("auto_target")
+        self.auto_target_label.setText(
+            "Shared target: --%" if target is None else f"Shared target: {target}%"
+        )
+        if not backend.get("automatic"):
+            return
+        error = backend.get("auto_error")
+        hottest = backend.get("auto_hottest")
+        if error:
+            self._set_status(f"Automatic mode error | {error}")
+        elif hottest is not None:
+            self._set_status(
+                f"Automatic mode | Max temperature {float(hottest):.1f} C",
+                updated=True,
+            )
 
     def _confirm_low_values(self, cpu: int, gpu: int) -> bool:
         low_values = []
@@ -782,7 +852,12 @@ class FanControlWindow(QMainWindow):
             QTimer.singleShot(4000, self.refresh_telemetry)
 
         self._run(
-            lambda: self._service.apply_manual(cpu, gpu),
+            lambda: self._backend.request(
+                "apply_manual",
+                cpu=cpu,
+                gpu=gpu,
+                confirmed_low=cpu < 30 or gpu < 30,
+            ),
             complete,
             "Applying manual fan speeds...",
         )
@@ -793,73 +868,7 @@ class FanControlWindow(QMainWindow):
         minimum_temp: int = DEFAULT_MIN_FAN_TEMP,
         maximum_temp: int = DEFAULT_MAX_FAN_TEMP,
     ) -> int:
-        if maximum_temp <= minimum_temp:
-            return MAX_AUTO_DUTY if temperature >= maximum_temp else MIN_AUTO_DUTY
-        if temperature <= minimum_temp:
-            return MIN_AUTO_DUTY
-        if temperature >= maximum_temp:
-            return MAX_AUTO_DUTY
-        position = (temperature - minimum_temp) / (maximum_temp - minimum_temp)
-        duty = MIN_AUTO_DUTY + position * (MAX_AUTO_DUTY - MIN_AUTO_DUTY)
-        rounded_duty = int((duty + 2.5) // 5) * 5
-        return max(MIN_AUTO_DUTY, min(MAX_AUTO_DUTY, rounded_duty))
-
-    def run_auto_cycle(self) -> None:
-        if (
-            self.mode_toggle.is_manual()
-            or self._busy
-            or self._telemetry_inflight
-            or self._auto_inflight
-            or self._closing
-        ):
-            return
-
-        self._auto_inflight = True
-        make_backup = self._auto_backup_needed
-        minimum_temp = self.min_temp_spin.value()
-        maximum_temp = self.max_temp_spin.value()
-
-        def operation() -> dict[str, Any]:
-            temperatures = read_temperatures()
-            hottest = max(temperatures.cpu_c, temperatures.gpu_c)
-            target = self._auto_target(hottest, minimum_temp, maximum_temp)
-            applied = self._service.apply_manual(
-                target, target, create_backup=make_backup
-            )
-            return {
-                "temperatures": temperatures,
-                "hottest": hottest,
-                "applied": applied,
-            }
-
-        worker = Worker(operation)
-        self._workers.add(worker)
-
-        def complete(result: dict[str, Any]) -> None:
-            self._workers.discard(worker)
-            self._auto_inflight = False
-            if self._closing:
-                return
-            self._auto_backup_needed = False
-            temperatures: Temperatures = result["temperatures"]
-            applied = result["applied"]
-            self._show_temperatures(temperatures)
-            self.auto_target_label.setText(f"Shared target: {applied['cpu']}%")
-            self._set_status(
-                f"Auto mode | Max temperature {result['hottest']:.1f} C",
-                updated=True,
-            )
-
-        def failed(details: str) -> None:
-            self._workers.discard(worker)
-            self._auto_inflight = False
-            if not self._closing:
-                last_line = details.strip().splitlines()[-1]
-                self._set_status(f"Auto mode error | {last_line}")
-
-        worker.signals.completed.connect(complete)
-        worker.signals.failed.connect(failed)
-        self._pool.start(worker)
+        return auto_target(temperature, minimum_temp, maximum_temp)
 
     def toggle_boost(self, enabled: bool) -> None:
         def complete(state: bool) -> None:
@@ -869,17 +878,79 @@ class FanControlWindow(QMainWindow):
             QTimer.singleShot(1500, self.refresh_telemetry)
 
         self._run(
-            lambda: self._service.set_boost(enabled),
+            lambda: self._backend.request("set_boost", enabled=enabled),
             complete,
             "Enabling Fan Boost..." if enabled else "Disabling Fan Boost...",
+        )
+
+    def check_backend(self) -> None:
+        if (
+            self._closing
+            or self._busy
+            or self._telemetry_inflight
+            or self._backend_check_inflight
+        ):
+            return
+        self._backend_check_inflight = True
+        worker = Worker(lambda: self._backend.request("frontend_heartbeat"))
+        self._workers.add(worker)
+
+        def complete(result: dict[str, Any]) -> None:
+            self._workers.discard(worker)
+            self._backend_check_inflight = False
+            if self._closing:
+                return
+            recovered = self._backend_offline
+            self._backend_offline = False
+            self._show_backend_state(result)
+            if recovered:
+                self._sync_backend_mode()
+
+        def failed(details: str) -> None:
+            del details
+            self._workers.discard(worker)
+            self._backend_check_inflight = False
+            if self._closing:
+                return
+            self._backend_offline = True
+            self._set_status("Backend unavailable | Waiting to restart")
+            now = time.monotonic()
+            if now - self._last_backend_restart >= RESTART_COOLDOWN_SECONDS:
+                self._last_backend_restart = now
+                try:
+                    launch_component("backend", "--no-frontend")
+                    self._set_status("Backend unavailable | Restart requested")
+                except Exception as exc:
+                    self._set_status(f"Backend restart failed | {exc}")
+
+        worker.signals.completed.connect(complete)
+        worker.signals.failed.connect(failed)
+        self._pool.start(worker)
+
+    def _sync_backend_mode(self) -> None:
+        automatic = not self.mode_toggle.is_manual()
+        minimum_temp = self.min_temp_spin.value()
+        maximum_temp = self.max_temp_spin.value()
+        self._run(
+            lambda: self._backend.request(
+                "set_mode",
+                automatic=automatic,
+                minimum_temp=minimum_temp,
+                maximum_temp=maximum_temp,
+            ),
+            self._show_backend_state,
+            "Restoring backend control mode...",
         )
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._closing = True
         self._telemetry_timer.stop()
-        self._auto_timer.stop()
         self._status_timer.stop()
-        self._service.close(wait=False)
+        self._backend_watchdog_timer.stop()
+        try:
+            BackendClient(timeout=0.5).request("frontend_detach")
+        except Exception:
+            pass
         event.accept()
 
     def activate_from_second_instance(self) -> None:
@@ -920,6 +991,8 @@ def create_instance_server(window: FanControlWindow) -> QLocalServer:
 
 
 def main() -> None:
+    if not ensure_backend(start_frontend=False):
+        raise RuntimeError("Could not start the fan-control backend")
     app = QApplication(sys.argv)
     app.setApplicationName("Fan Control")
     if notify_existing_instance():
