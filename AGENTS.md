@@ -80,3 +80,11 @@ After packaging, verify that the window opens, remains responsive, and a second 
 - Use ASCII for source and scripts unless an existing file requires otherwise.
 - Keep changes narrowly scoped. Do not rewrite protocol constants or reverse-engineered payloads without verifying them against the installed OEM service.
 - Update the README when prerequisites, safety behavior, Auto curve semantics, or build steps change.
+
+## Documentation maintenance
+
+- Keep `DESIGN.md` synchronized with architecture decisions, safety-relevant rationale, and design ideas.
+- Keep `STRUCTURE.md` synchronized with tracked source files, dependency boundaries, and runtime/generated paths.
+- Add only factual important incidents to `ACCIDENTS.md`. Each entry needs a timestamp and nested Problem, Outcomes, and Solution sections; explicitly identify unknown occurrence times.
+- Keep all open debt, problems, and planned work in `TODO.md`. Every entry heading must use `PRIORITY - Title` with one of `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL`, without priority-group sections.
+- Update the affected living documents in the same change as the code or operational discovery that makes them stale.

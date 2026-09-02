@@ -103,3 +103,10 @@ backups can be previewed and restored with:
 the first command only shows what would be restored. the second one writes it.
 
 if temperatures climb unexpectedly, do not wait for this app to fix itself. turn on OEM Fan Boost immediately or shut the laptop down.
+
+## project documents
+
+- [design decisions and ideas](DESIGN.md)
+- [file, folder, runtime, and dependency structure](STRUCTURE.md)
+- [important accident records](ACCIDENTS.md)
+- [prioritized technical debt, problems, and planned work](TODO.md)
