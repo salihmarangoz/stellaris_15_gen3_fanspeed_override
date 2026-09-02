@@ -4,7 +4,7 @@ import traceback
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QColor, QCloseEvent, QPainter, QPen
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
@@ -92,6 +92,88 @@ class FanCurveGraph(QWidget):
         painter.setBrush(curve_color)
         for x, y in points[1:3]:
             painter.drawEllipse(x - 4, y - 4, 8, 8)
+
+
+class SensorGauge(QWidget):
+    def __init__(self, title: str, unit: str, *, temperature_colors: bool) -> None:
+        super().__init__()
+        self._title = title
+        self._unit = unit
+        self._temperature_colors = temperature_colors
+        self._value: float | None = None
+        self.setMinimumSize(135, 125)
+        self.setAccessibleName(f"{title} gauge")
+
+    def set_value(self, value: float | None) -> None:
+        self._value = value
+        if value is None:
+            self.setAccessibleDescription("Value unavailable")
+        else:
+            self.setAccessibleDescription(f"{value:.1f} {self._unit}")
+        self.update()
+
+    def paintEvent(self, event: object) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        title_font = painter.font()
+        title_font.setBold(True)
+        title_font.setPointSize(11)
+        painter.setFont(title_font)
+        painter.setPen(QColor("#eef1f3"))
+        painter.drawText(
+            self.rect().adjusted(0, 0, 0, -94),
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+            self._title,
+        )
+
+        diameter = min(self.width() - 20, 150)
+        arc_rect = QRectF((self.width() - diameter) / 2, 32, diameter, diameter)
+        background_pen = QPen(QColor("#34393e"), 11)
+        background_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(background_pen)
+        painter.drawArc(arc_rect, 180 * 16, -180 * 16)
+
+        if self._value is None:
+            gauge_color = QColor("#727980")
+            span = 0
+            value_text = f"-- {self._unit}"
+        else:
+            displayed = max(0.0, min(100.0, self._value))
+            if self._temperature_colors and displayed >= 80:
+                gauge_color = QColor("#e35d6a")
+            elif self._temperature_colors and displayed >= 60:
+                gauge_color = QColor("#e4b45d")
+            else:
+                gauge_color = QColor("#25b99a")
+            span = round(-180 * 16 * displayed / 100)
+            decimals = 1 if self._temperature_colors else 0
+            value_text = f"{self._value:.{decimals}f} {self._unit}"
+
+        value_pen = QPen(gauge_color, 11)
+        value_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(value_pen)
+        painter.drawArc(arc_rect, 180 * 16, span)
+
+        value_font = painter.font()
+        value_font.setBold(True)
+        value_font.setPointSize(14)
+        painter.setFont(value_font)
+        painter.setPen(gauge_color)
+        painter.drawText(
+            self.rect().adjusted(0, 66, 0, 0),
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+            value_text,
+        )
+
+        scale_font = painter.font()
+        scale_font.setBold(False)
+        scale_font.setPointSize(8)
+        painter.setFont(scale_font)
+        painter.setPen(QColor("#aeb6bd"))
+        painter.drawText(5, 105, "0")
+        painter.drawText(self.width() - 27, 105, "100")
 
 
 class DisabledPanelOverlay(QWidget):
@@ -320,19 +402,26 @@ class FanControlWindow(QMainWindow):
         sensor_title = QLabel("Sensor values")
         sensor_title.setObjectName("sectionTitle")
         sensor_layout.addWidget(sensor_title)
-        self.cpu_temp_label = QLabel("CPU temperature: --.- C")
-        self.cpu_temp_label.setObjectName("temperatureValue")
-        sensor_layout.addWidget(self.cpu_temp_label)
-        self.cpu_reported = QLabel("CPU fan reported: --%")
-        self.cpu_reported.setObjectName("reportedValue")
-        sensor_layout.addWidget(self.cpu_reported)
 
-        self.gpu_temp_label = QLabel("GPU temperature: --.- C")
-        self.gpu_temp_label.setObjectName("temperatureValue")
-        sensor_layout.addWidget(self.gpu_temp_label)
-        self.gpu_reported = QLabel("GPU fan reported: --%")
-        self.gpu_reported.setObjectName("reportedValue")
-        sensor_layout.addWidget(self.gpu_reported)
+        temperature_row = QHBoxLayout()
+        temperature_row.setSpacing(12)
+        self.cpu_temp_gauge = SensorGauge("CPU temp", "C", temperature_colors=True)
+        self.gpu_temp_gauge = SensorGauge("GPU temp", "C", temperature_colors=True)
+        temperature_row.addWidget(self.cpu_temp_gauge, 1)
+        temperature_row.addWidget(self.gpu_temp_gauge, 1)
+        sensor_layout.addLayout(temperature_row)
+
+        fan_row = QHBoxLayout()
+        fan_row.setSpacing(12)
+        self.cpu_fan_gauge = SensorGauge(
+            "CPU fan", "%", temperature_colors=False
+        )
+        self.gpu_fan_gauge = SensorGauge(
+            "GPU fan", "%", temperature_colors=False
+        )
+        fan_row.addWidget(self.cpu_fan_gauge, 1)
+        fan_row.addWidget(self.gpu_fan_gauge, 1)
+        sensor_layout.addLayout(fan_row)
         self.source_label = QLabel("CPU: PawnIO Ryzen SMN | GPU: NVIDIA driver")
         self.source_label.setWordWrap(True)
         self.source_label.setObjectName("statusText")
@@ -679,8 +768,8 @@ class FanControlWindow(QMainWindow):
                 if temperatures is not None:
                     self._show_temperatures(temperatures)
                 elif result["temperature_error"]:
-                    self.cpu_temp_label.setText("CPU temperature: unavailable")
-                    self.gpu_temp_label.setText("GPU temperature: unavailable")
+                    self.cpu_temp_gauge.set_value(None)
+                    self.gpu_temp_gauge.set_value(None)
                     self.source_label.setText(
                         f"Sensor error: {result['temperature_error']}"
                     )
@@ -696,20 +785,25 @@ class FanControlWindow(QMainWindow):
         self._pool.start(worker)
 
     def _show_telemetry(self, telemetry: dict[str, Any]) -> None:
-        self.cpu_reported.setText(
-            f"CPU fan reported: {telemetry.get('CpuFanDuty', '--')}%"
-        )
-        self.gpu_reported.setText(
-            f"GPU fan reported: {telemetry.get('GpuFanDuty', '--')}%"
-        )
+        for gauge, key in (
+            (self.cpu_fan_gauge, "CpuFanDuty"),
+            (self.gpu_fan_gauge, "GpuFanDuty"),
+        ):
+            try:
+                duty = float(telemetry[key])
+            except (KeyError, TypeError, ValueError):
+                duty = None
+            if duty is not None and not 0 <= duty <= 100:
+                duty = None
+            gauge.set_value(duty)
         if self._table_name and self.manual_mode_button.isChecked():
             self._set_status(
                 f"Connected | Active table: {self._table_name}", updated=True
             )
 
     def _show_temperatures(self, temperatures: Temperatures) -> None:
-        self.cpu_temp_label.setText(f"CPU temperature: {temperatures.cpu_c:.1f} C")
-        self.gpu_temp_label.setText(f"GPU temperature: {temperatures.gpu_c:.1f} C")
+        self.cpu_temp_gauge.set_value(temperatures.cpu_c)
+        self.gpu_temp_gauge.set_value(temperatures.gpu_c)
         self.source_label.setText(
             f"CPU: {temperatures.cpu_source} | GPU: {temperatures.gpu_source}"
         )
