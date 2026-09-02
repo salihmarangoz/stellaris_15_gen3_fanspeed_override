@@ -16,16 +16,27 @@ Last reviewed: 2026-09-02
 |-- TODO.md                      prioritized open debt, problems, and work
 |-- THIRD_PARTY_NOTICES.md       pinned dependency provenance and licenses
 |-- stellaris15gen3.py           packaged/source role launcher
-|-- fan_control_common.py        pure automatic-curve constants and calculation
-|-- fan_control_ipc.py           local IPC client, endpoint, privilege-aware launches
-|-- fan_control_backend.py       elevated backend, scheduler, IPC server, watchdog
-|-- fan_control_gui.py           normal-user PySide6 frontend
-|-- stellaris15gen3.css          complete Qt stylesheet
-|-- temperature_service.py       independent Ryzen and NVIDIA temperature reads
-|-- fan_control_service.py       serialized singleton OEM-service owner
-|-- fan_control.py               low-level MQTT, curve transforms, backup/restore CLI
-|-- fan_control_probe.py         read-only MQTT diagnostic utility
-|-- test_fan_control_backend.py  pure/mocked backend, safety, and IPC tests
+|-- frontend\
+|   |-- __init__.py              frontend package marker
+|   |-- fan_control_gui.py       normal-user PySide6 frontend
+|   |-- stellaris15gen3.css      complete Qt stylesheet
+|   `-- requirements.txt         frontend-only runtime dependencies
+|-- backend\
+|   |-- __init__.py              backend package marker
+|   |-- fan_control_backend.py   elevated scheduler, IPC server, watchdog
+|   |-- temperature_service.py   independent Ryzen and NVIDIA temperature reads
+|   |-- fan_control_service.py   serialized singleton OEM-service owner
+|   |-- fan_control.py           low-level MQTT, curves, backup/restore CLI
+|   |-- fan_control_probe.py     read-only MQTT diagnostic utility
+|   `-- requirements.txt         backend-only runtime dependencies
+|-- shared\
+|   |-- __init__.py              shared package marker
+|   |-- fan_control_common.py    pure automatic-curve constants and calculation
+|   `-- fan_control_ipc.py       IPC, endpoint, and privilege-aware launches
+|-- tests\
+|   |-- __init__.py              test package marker
+|   `-- test_fan_control_backend.py
+|                                pure/mocked backend, safety, and IPC tests
 |-- launch_fan_control.ps1       source setup and normal-user launcher
 |-- run_fan_control_gui.cmd      command-shell entry point
 |-- setup_pawnio.ps1             pinned PawnIO setup and module verification
@@ -39,15 +50,16 @@ Last reviewed: 2026-09-02
 
 ```text
 stellaris15gen3.py
-|-- frontend role -> fan_control_gui.py -> fan_control_ipc.py
-`-- backend role  -> fan_control_backend.py
-                    |-- fan_control_common.py
-                    |-- fan_control_ipc.py
-                    |-- temperature_service.py
-                    `-- fan_control_service.py -> fan_control.py
+|-- frontend role -> frontend/fan_control_gui.py
+|                    `-- shared/{fan_control_common,fan_control_ipc}.py
+`-- backend role  -> backend/fan_control_backend.py
+                    |-- shared/{fan_control_common,fan_control_ipc}.py
+                    |-- backend/temperature_service.py
+                    `-- backend/fan_control_service.py
+                         `-- backend/fan_control.py
 ```
 
-`temperature_service.py` must remain independent of `fan_control_service.py` and the OEM Control Center. `fan_control_gui.py` must not import hardware or OEM protocol modules. `fan_control_common.py` stays pure so curve behavior can be tested without Qt, MQTT, PawnIO, NVIDIA, or administrator access.
+`backend/temperature_service.py` must remain independent of `backend/fan_control_service.py` and the OEM Control Center. `frontend/fan_control_gui.py` must not import the `backend` package. `shared/fan_control_common.py` stays pure so curve behavior can be tested without Qt, MQTT, PawnIO, NVIDIA, or administrator access. Shared code must not import either process package.
 
 ## Runtime paths
 
@@ -75,4 +87,4 @@ dist\
 third_party\pawnio\AMDFamily17.bin
 ```
 
-`build_exe.ps1` produces `dist\StellarisFanControl.exe`. PyInstaller embeds `stellaris15gen3.css` and the hash-verified AMD PawnIO module. The PawnIO driver and OEM Control Center remain external system dependencies.
+`build_exe.ps1` produces `dist\StellarisFanControl.exe`. PyInstaller embeds `frontend\stellaris15gen3.css` and the hash-verified AMD PawnIO module. The PawnIO driver and OEM Control Center remain external system dependencies.

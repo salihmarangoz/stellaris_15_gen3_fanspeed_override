@@ -47,7 +47,12 @@ def _run_hidden(command: list[str], timeout: int = 8) -> str:
 def _pawn_module_path() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys._MEIPASS) / "pawnio" / "AMDFamily17.bin"
-    return Path(__file__).with_name("third_party") / "pawnio" / "AMDFamily17.bin"
+    return (
+        Path(__file__).resolve().parents[1]
+        / "third_party"
+        / "pawnio"
+        / "AMDFamily17.bin"
+    )
 
 
 def _read_ryzen_smn(offset: int) -> int:

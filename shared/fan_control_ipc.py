@@ -35,6 +35,12 @@ def endpoint_path() -> Path:
     return runtime_directory() / ENDPOINT_FILENAME
 
 
+def application_directory() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
+
+
 def component_command(role: str, *extra_arguments: str) -> list[str]:
     role_argument = f"--{role}"
     if getattr(sys, "frozen", False):
@@ -45,7 +51,7 @@ def component_command(role: str, *extra_arguments: str) -> list[str]:
         pythonw = python.with_name("pythonw.exe")
         if pythonw.exists():
             python = pythonw
-    launcher = Path(__file__).resolve().with_name("stellaris15gen3.py")
+    launcher = application_directory() / "stellaris15gen3.py"
     return [str(python), str(launcher), role_argument, *extra_arguments]
 
 
@@ -65,7 +71,7 @@ def _launch_elevated(command: list[str]) -> None:
         "runas",
         command[0],
         subprocess.list2cmdline(command[1:]),
-        str(Path(__file__).resolve().parent),
+        str(application_directory()),
         0,
     )
     if result <= 32:
@@ -79,7 +85,7 @@ def _powershell_literal(value: str) -> str:
 def _launch_unelevated(command: list[str]) -> None:
     executable = _powershell_literal(command[0])
     arguments = _powershell_literal(subprocess.list2cmdline(command[1:]))
-    working_directory = _powershell_literal(str(Path(__file__).resolve().parent))
+    working_directory = _powershell_literal(str(application_directory()))
     script = (
         "$shell = New-Object -ComObject Shell.Application; "
         f"$shell.ShellExecute({executable}, {arguments}, {working_directory}, 'open', 1)"
@@ -96,7 +102,7 @@ def _launch_unelevated(command: list[str]) -> None:
             "-EncodedCommand",
             encoded_script,
         ],
-        cwd=Path(__file__).resolve().parent,
+        cwd=application_directory(),
         close_fds=True,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
@@ -118,7 +124,7 @@ def launch_component(
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     return subprocess.Popen(
         command,
-        cwd=Path(__file__).resolve().parent,
+        cwd=application_directory(),
         close_fds=True,
         creationflags=creation_flags,
     )

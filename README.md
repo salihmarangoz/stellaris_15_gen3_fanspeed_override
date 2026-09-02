@@ -74,9 +74,9 @@ the launcher runs `setup_pawnio.ps1`. it installs PawnIO if needed, downloads th
 the command-line write commands are dry runs unless `--apply` is added:
 
 ```powershell
-.\.venv\Scripts\python.exe .\fan_control.py status
-.\.venv\Scripts\python.exe .\fan_control.py rpm
-.\.venv\Scripts\python.exe .\fan_control.py fixed 65 --gpu-duty 75
+.\.venv\Scripts\python.exe .\backend\fan_control.py status
+.\.venv\Scripts\python.exe .\backend\fan_control.py rpm
+.\.venv\Scripts\python.exe .\backend\fan_control.py fixed 65 --gpu-duty 75
 ```
 
 inspect the preview before adding `--apply`. manual writes create a backup of the active curve first. source backups go in `fan-backups`; packaged builds use `%LOCALAPPDATA%\StellarisFanControl\fan-backups`.
@@ -87,7 +87,7 @@ inspect the preview before adding `--apply`. manual writes create a backup of th
 powershell.exe -ExecutionPolicy Bypass -File .\build_exe.ps1
 ```
 
-the script creates the virtual environment if needed, prepares PawnIO, installs the build requirements, and writes `dist\StellarisFanControl.exe`. the AMD sensor module and `stellaris15gen3.css` are bundled into the exe. the signed PawnIO driver and OEM Control Center still have to be installed separately.
+the script creates the virtual environment if needed, prepares PawnIO, installs the build requirements, and writes `dist\StellarisFanControl.exe`. the AMD sensor module and `frontend\stellaris15gen3.css` are bundled into the exe. the signed PawnIO driver and OEM Control Center still have to be installed separately.
 
 the exe itself has no administrator manifest, so the frontend stays non-administrator. Windows asks for administrator access when the exe starts its backend role. generated executables, PyInstaller files, downloaded modules, virtual environments, caches, and fan backups are ignored by git.
 
@@ -96,8 +96,8 @@ the exe itself has no administrator manifest, so the frontend stays non-administ
 backups can be previewed and restored with:
 
 ```powershell
-.\.venv\Scripts\python.exe .\fan_control.py restore .\fan-backups\M2T1-TIMESTAMP.json
-.\.venv\Scripts\python.exe .\fan_control.py restore .\fan-backups\M2T1-TIMESTAMP.json --apply
+.\.venv\Scripts\python.exe .\backend\fan_control.py restore .\fan-backups\M2T1-TIMESTAMP.json
+.\.venv\Scripts\python.exe .\backend\fan_control.py restore .\fan-backups\M2T1-TIMESTAMP.json --apply
 ```
 
 the first command only shows what would be restored. the second one writes it.

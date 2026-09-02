@@ -23,14 +23,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fan_control_common import (
+from shared.fan_control_common import (
     DEFAULT_MAX_FAN_TEMP,
     DEFAULT_MIN_FAN_TEMP,
     MAX_AUTO_DUTY,
     MIN_AUTO_DUTY,
     auto_target,
 )
-from fan_control_ipc import (
+from shared.fan_control_ipc import (
     BackendClient,
     RESTART_COOLDOWN_SECONDS,
     ensure_backend,
@@ -561,7 +561,7 @@ class FanControlWindow(QMainWindow):
 
     def _apply_style(self) -> None:
         if hasattr(sys, "_MEIPASS"):
-            stylesheet_path = Path(sys._MEIPASS) / STYLESHEET_NAME
+            stylesheet_path = Path(sys._MEIPASS) / "frontend" / STYLESHEET_NAME
         else:
             stylesheet_path = Path(__file__).resolve().with_name(STYLESHEET_NAME)
         self.setStyleSheet(stylesheet_path.read_text(encoding="utf-8"))

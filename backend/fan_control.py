@@ -171,7 +171,7 @@ def save_backup(curve: dict[str, Any]) -> Path:
         data_root = Path(os.environ.get("LOCALAPPDATA", Path.home()))
         backup_dir = data_root / "StellarisFanControl" / "fan-backups"
     else:
-        backup_dir = Path(__file__).with_name("fan-backups")
+        backup_dir = Path(__file__).resolve().parents[1] / "fan-backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     path = backup_dir / f"{curve['Name']}-{timestamp}.json"

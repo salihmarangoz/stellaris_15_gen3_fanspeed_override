@@ -1,6 +1,6 @@
 import sys
 
-from fan_control_ipc import (
+from shared.fan_control_ipc import (
     BackendClient,
     ensure_backend,
     is_administrator,
@@ -15,7 +15,7 @@ def main() -> None:
             extra_arguments = () if "--no-frontend" not in arguments else ("--no-frontend",)
             launch_component("backend", *extra_arguments)
             return
-        from fan_control_backend import run_backend
+        from backend.fan_control_backend import run_backend
 
         run_backend(start_frontend="--no-frontend" not in arguments)
         return
@@ -26,7 +26,7 @@ def main() -> None:
             return
         if not ensure_backend(start_frontend=False):
             raise RuntimeError("Could not start the fan-control backend")
-        from fan_control_gui import main as run_frontend
+        from frontend.fan_control_gui import main as run_frontend
 
         run_frontend()
         return

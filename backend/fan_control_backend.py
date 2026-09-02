@@ -8,13 +8,13 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from fan_control_common import (
+from shared.fan_control_common import (
     AUTO_INTERVAL_SECONDS,
     DEFAULT_MAX_FAN_TEMP,
     DEFAULT_MIN_FAN_TEMP,
     auto_target,
 )
-from fan_control_ipc import (
+from shared.fan_control_ipc import (
     FRONTEND_HEARTBEAT_TIMEOUT_SECONDS,
     MAX_MESSAGE_BYTES,
     RESTART_COOLDOWN_SECONDS,
@@ -23,8 +23,8 @@ from fan_control_ipc import (
     launch_component,
     runtime_directory,
 )
-from fan_control_service import ControlCenterService
-from temperature_service import Temperatures, read_temperatures
+from backend.fan_control_service import ControlCenterService
+from backend.temperature_service import Temperatures, read_temperatures
 
 
 class BackendController:

@@ -67,7 +67,7 @@ The window is a wide three-column layout: Automatic controls on the left, Manual
 
 The automatic curve graph visualizes the configured temperature endpoints and the fixed 80 C full-speed cap. CPU and GPU temperature gauges are separate from the reported CPU and GPU fan-duty gauges.
 
-All styling lives in `stellaris15gen3.css`; Python code supplies structure, state, and custom-widget painting.
+All styling lives in `frontend/stellaris15gen3.css`; Python code supplies structure, state, and custom-widget painting.
 
 ## Recorded decisions
 
@@ -78,6 +78,7 @@ All styling lives in `stellaris15gen3.css`; Python code supplies structure, stat
 | 2026-09-02T12:13:36+03:00 | Keep presentation styling in one CSS file and use the `stellaris15gen3` identifier. | Visual changes stay separate from application logic and naming stays hardware-specific. |
 | 2026-09-02T12:39:47+03:00 | Split the frontend and backend into supervised processes. | Automatic control can continue without PySide6, and either side can recover the other with cooldown protection. |
 | 2026-09-02T12:46:54+03:00 | Elevate only the backend. | The GUI has no hardware-access reason to run as administrator; packaged builds therefore have no global admin manifest. |
+| 2026-09-02T12:54:38+03:00 | Put frontend, backend, shared code, and tests in explicit packages. | Filesystem boundaries now match process and dependency boundaries; frontend and backend dependencies can be inspected separately. |
 
 ## Ideas under consideration
 

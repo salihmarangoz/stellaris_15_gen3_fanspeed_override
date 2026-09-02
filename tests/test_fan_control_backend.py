@@ -6,10 +6,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from fan_control_backend import BackendController, BackendServer, run_backend
-from fan_control_common import auto_target
-from fan_control_ipc import BackendClient, component_command, launch_component
-from temperature_service import Temperatures
+from backend.fan_control_backend import BackendController, BackendServer, run_backend
+from backend.temperature_service import Temperatures
+from shared.fan_control_common import auto_target
+from shared.fan_control_ipc import BackendClient, component_command, launch_component
 
 
 class FakeService:
@@ -43,7 +43,9 @@ class BackendSafetyTests(unittest.TestCase):
         controller._service = service
         controller.set_mode(True, 40, 80)
         temperatures = Temperatures(65.0, 70.0, "CPU test", "GPU test")
-        with patch("fan_control_backend.read_temperatures", return_value=temperatures):
+        with patch(
+            "backend.fan_control_backend.read_temperatures", return_value=temperatures
+        ):
             controller._run_auto_cycle()
             controller._run_auto_cycle()
         self.assertEqual(service.writes, [(85, 85, True), (85, 85, False)])
@@ -53,7 +55,9 @@ class BackendSafetyTests(unittest.TestCase):
         service = FakeService()
         controller._service = service
         temperatures = Temperatures(65.0, 70.0, "CPU test", "GPU test")
-        with patch("fan_control_backend.read_temperatures", return_value=temperatures):
+        with patch(
+            "backend.fan_control_backend.read_temperatures", return_value=temperatures
+        ):
             controller.start(start_frontend=False)
             controller.set_mode(True, 40, 80)
             self.assertTrue(service.write_event.wait(2.0))
@@ -66,7 +70,9 @@ class BackendSafetyTests(unittest.TestCase):
         controller._service = service
         controller.set_mode(True, 40, 80)
         temperatures = Temperatures(0.0, 70.0, "CPU test", "GPU test")
-        with patch("fan_control_backend.read_temperatures", return_value=temperatures):
+        with patch(
+            "backend.fan_control_backend.read_temperatures", return_value=temperatures
+        ):
             controller._run_auto_cycle()
         self.assertEqual(service.writes, [])
         self.assertIn("zero", controller._snapshot()["auto_error"].lower())
@@ -82,7 +88,7 @@ class BackendSafetyTests(unittest.TestCase):
             return Temperatures(65.0, 70.0, "CPU test", "GPU test")
 
         with patch(
-            "fan_control_backend.read_temperatures",
+            "backend.fan_control_backend.read_temperatures",
             side_effect=leave_auto_during_read,
         ):
             controller._run_auto_cycle()
@@ -90,7 +96,7 @@ class BackendSafetyTests(unittest.TestCase):
 
     def test_frontend_restart_attempts_obey_cooldown(self) -> None:
         controller = BackendController()
-        with patch("fan_control_backend.launch_component") as launch:
+        with patch("backend.fan_control_backend.launch_component") as launch:
             self.assertTrue(controller.show_frontend(force=True))
             self.assertFalse(controller.show_frontend())
         launch.assert_called_once_with("frontend")
@@ -109,9 +115,9 @@ class IpcTests(unittest.TestCase):
     def test_normal_frontend_requests_an_elevated_backend(self) -> None:
         expected = component_command("backend", "--no-frontend")
         with (
-            patch("fan_control_ipc.os.name", "nt"),
-            patch("fan_control_ipc.is_administrator", return_value=False),
-            patch("fan_control_ipc._launch_elevated") as elevated,
+            patch("shared.fan_control_ipc.os.name", "nt"),
+            patch("shared.fan_control_ipc.is_administrator", return_value=False),
+            patch("shared.fan_control_ipc._launch_elevated") as elevated,
         ):
             self.assertIsNone(launch_component("backend", "--no-frontend"))
         elevated.assert_called_once_with(expected)
@@ -119,15 +125,17 @@ class IpcTests(unittest.TestCase):
     def test_elevated_backend_requests_a_normal_frontend(self) -> None:
         expected = component_command("frontend")
         with (
-            patch("fan_control_ipc.os.name", "nt"),
-            patch("fan_control_ipc.is_administrator", return_value=True),
-            patch("fan_control_ipc._launch_unelevated") as unelevated,
+            patch("shared.fan_control_ipc.os.name", "nt"),
+            patch("shared.fan_control_ipc.is_administrator", return_value=True),
+            patch("shared.fan_control_ipc._launch_unelevated") as unelevated,
         ):
             self.assertIsNone(launch_component("frontend"))
         unelevated.assert_called_once_with(expected)
 
     def test_backend_refuses_to_run_without_administrator_access(self) -> None:
-        with patch("fan_control_backend.is_administrator", return_value=False):
+        with patch(
+            "backend.fan_control_backend.is_administrator", return_value=False
+        ):
             with self.assertRaises(PermissionError):
                 run_backend(start_frontend=False)
 

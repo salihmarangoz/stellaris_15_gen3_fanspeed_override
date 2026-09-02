@@ -2,7 +2,7 @@ import threading
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-from fan_control import ControlCenterClient, fixed_curve, save_backup
+from backend.fan_control import ControlCenterClient, fixed_curve, save_backup
 
 
 T = TypeVar("T")
