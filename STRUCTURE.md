@@ -15,6 +15,7 @@ Last reviewed: 2026-09-02
 |-- ACCIDENTS.md                 factual important-incident records
 |-- TODO.md                      prioritized open debt, problems, and work
 |-- THIRD_PARTY_NOTICES.md       pinned dependency provenance and licenses
+|-- .github\workflows\release.yml Windows build, mocked checks, tagged releases
 |-- assets\
 |   |-- stellaris-fan-control.png transparent application/tray icon source
 |   |-- stellaris-fan-control.ico Windows executable icon
@@ -42,13 +43,16 @@ Last reviewed: 2026-09-02
 |   `-- fan_control_ipc.py       IPC, endpoint, and privilege-aware launches
 |-- tests\
 |   |-- __init__.py              test package marker
-|   `-- test_fan_control_backend.py
+|   |-- test_fan_control_backend.py
 |                                pure/mocked backend, safety, and IPC tests
+|   `-- test_session_shutdown.py mocked Qt shutdown and mode-confirmation tests
 |-- scripts\
 |   |-- launch_fan_control.ps1   source setup and normal-user launcher
 |   |-- run_fan_control_gui.cmd  command-shell entry point
 |   |-- setup_pawnio.ps1         pinned PawnIO setup and module verification
-|   `-- build_exe.ps1            reproducible PyInstaller build entry point
+|   |-- build_exe.ps1            reproducible PyInstaller build entry point
+|   |-- package_release.ps1      release ZIP and SHA-256 checksum generation
+|   `-- install.ps1              elevated packaged-app install and startup-task setup
 |-- requirements.txt             source/runtime Python dependencies
 |-- requirements-build.txt       packaging dependencies
 `-- .gitignore                   generated and local-only exclusions
@@ -104,3 +108,9 @@ StellarisFanControl.json
 ```
 
 `scripts\build_exe.ps1` produces one `dist\StellarisFanControl.exe` containing the interface, controller, stylesheet, tray icon, and the hash-verified AMD PawnIO module. The generated ICO is embedded as the executable icon. The executable carries an administrator manifest and runs as one process after UAC approval. The PawnIO driver and OEM Control Center remain external system dependencies.
+
+`scripts\install.ps1` copies that executable to `%ProgramFiles%\StellarisFanControl\StellarisFanControl.exe` and registers the per-user `Stellaris Fan Control` scheduled task. The highest-privilege task starts at interactive sign-in, not pre-login system boot, so the window and tray icon are available on the user's desktop. The script verifies that the source and installed executable SHA-256 hashes match.
+
+The installer also accepts `StellarisFanControl.exe` at the root of an extracted release ZIP and invokes PawnIO setup before copying. Existing installed preferences are preserved. `scripts\package_release.ps1` stages files under an isolated `build\release-<id>` directory and writes `dist\StellarisFanControl-windows-x64.zip` plus `.zip.sha256`. The ZIP contains the executable, README, third-party notices, `scripts\install.ps1`, `scripts\setup_pawnio.ps1`, and `third_party\pawnio\AMDFamily17.bin`.
+
+`.github\workflows\release.yml` builds and runs mocked/offscreen tests on Windows without driver installation or application launch. Tag pushes publish the archive and checksum; manual branch runs retain them as Actions artifacts. Publication runs separately with repository-content write permission.

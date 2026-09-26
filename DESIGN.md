@@ -41,7 +41,7 @@ Stopping `GCUBridge` clears all six RAM Fan 1.5 curve blocks and changes the OEM
 
 The direct fan locations are volatile EC RAM rather than an EEPROM/firmware update path. This is supported by the matching Uniwill implementation in TUXEDO's hardware driver, which names the same `0x0751`, `0x07C5`, `0x07C6`, and `0x0F00`-`0x0F5F` locations EC RAM and routinely rewrites the fan tables during initialization. The installed OEM DLL also exports distinct `WriteEC` and `WriteCMOS` functions; this application imports only `ReadEC` and `WriteEC`. This substantially reduces write-endurance concerns, but does not make arbitrary EC writes safe: the OEM firmware and Windows driver remain proprietary, so target validation, exact address restrictions, serialization, readback, and rollback remain mandatory.
 
-The packaged `StellarisFanControl.exe` carries an administrator manifest and runs the PySide6 interface and backend controller in one elevated process. The interface uses an in-process client with the same synchronous dispatch boundary, while its one-worker pool keeps controller operations off the GUI thread. Closing the window hides it in the system tray and preserves the controller and Automatic scheduler. Only the dedicated Exit controls perform the confirmed 80% shutdown. The separate source entry points and authenticated loopback transport remain available for development.
+The packaged `StellarisFanControl.exe` carries an administrator manifest and runs the PySide6 interface and backend controller in one elevated process. The interface uses an in-process client with the same synchronous dispatch boundary, while its one-worker pool keeps controller operations off the GUI thread. Closing the window hides it in the system tray and preserves the controller and Automatic scheduler. Only the dedicated Exit controls perform the confirmed 100% shutdown. The separate source entry points and authenticated loopback transport remain available for development.
 
 ## Automatic-control design
 
@@ -64,7 +64,7 @@ Entering Automatic mode creates one backup before the first write. Later 15-seco
 
 The backend binds an ephemeral IPv4 loopback port and writes its host, port, and random token to `%LOCALAPPDATA%\StellarisFanControl\backend-endpoint.json`. Requests and responses are newline-delimited JSON with a 64 KiB limit. Application control does not use MQTT; the OEM MQTT connection is a hardware-specific implementation detail owned exclusively by the backend.
 
-Current commands are `ping`, `load_state`, `read_telemetry`, `apply_manual`, `set_boost`, `set_oem_service`, `prepare_exit`, `set_mode`, `configure_auto`, `frontend_heartbeat`, `frontend_detach`, and `show_frontend`. Service changes and exit preparation are rejected unless the frontend includes the confirmation marker after the user accepts the corresponding modal prompt. A confirmed exit serializes an 80% write to both fans, stops Automatic scheduling only after that write succeeds, and leaves the window open on failure.
+Current commands are `ping`, `load_state`, `read_telemetry`, `apply_manual`, `set_boost`, `set_oem_service`, `prepare_exit`, `set_mode`, `configure_auto`, `frontend_heartbeat`, `frontend_detach`, and `show_frontend`. Service changes and exit preparation are rejected unless the frontend includes the confirmation marker after the user accepts the corresponding modal prompt. A confirmed exit serializes a 100% write to both fans, stops Automatic scheduling only after that write succeeds, and leaves the window open on failure.
 
 The token prevents unauthenticated requests that cannot read the endpoint file. This is local process authentication, not encryption and not a claim that the current-user account is isolated from its own processes. IPC hardening work belongs in `TODO.md`.
 
@@ -93,6 +93,13 @@ All styling lives in `frontend/stellaris15gen3.css`; Python code supplies struct
 | 2026-09-02 | Add direct EC fan-table control when the OEM broker is unavailable, with OEM MQTT selected when it is running. | Fan control can survive a stopped `GCUBridge` service while preserving the established OEM route, complete backups, method serialization, target-hardware checks, and readback verification. |
 | 2026-09-02 | Supersede separate packaged executables with one role-selecting executable. | Distribution is simpler while frontend and backend remain separate processes; only the `--backend` relaunch receives UAC elevation. |
 | 2026-09-02 | Supersede the role-selecting package with one elevated application process. | The requested distribution and runtime model is a single app that asks for UAC at startup; closing its window therefore also stops Automatic control. |
+| 2026-09-02 | Install packaged startup through a highest-privilege per-user sign-in task. | The GUI needs an interactive desktop, so a pre-login boot task would hide its window and tray icon in a non-interactive session. Installation itself does not launch Auto mode or write fan targets. |
+
+## Release distribution
+
+Tagged `v*` pushes build Windows x64 release archives through GitHub Actions. The build job has read-only repository permissions and skips PawnIO driver installation while retaining the pinned module hash check. A separate publish job receives write permission only for tagged releases after the build and mocked tests succeed. Branch dispatches produce artifacts without publishing.
+
+The same installer accepts a local `dist` executable or the executable at the root of an extracted release archive. It prepares PawnIO and installs into Program Files, preserving preferences and registering an interactive, highest-privilege sign-in task. Startup therefore remains independent of source/download folder moves. Neither packaging nor installation launches Automatic mode. Release checksums detect download corruption; the application remains unsigned.
 
 ## Ideas under consideration
 
@@ -102,3 +109,7 @@ All styling lives in `frontend/stellaris15gen3.css`; Python code supplies struct
 - Show backend privilege and connection state without exposing the IPC token.
 
 Ideas are not commitments. Actionable work and priorities are tracked in `TODO.md`.
+
+Windows session shutdown uses a direct Qt `commitDataRequest` connection with fallback session management disabled. The handler suppresses frontend callbacks, queues exit preparation on the existing single-worker pool, and waits up to 45 seconds before acknowledging shutdown. No sensor read is required. On failure or timeout it requests session cancellation; on success it closes the frontend, leaving both targets at 100%. Forced termination and OEM service teardown ordering still require target-hardware validation.
+
+User-initiated mode changes ask for confirmation in the toggle before its checked state changes. Declining leaves the current UI and backend mode intact. Programmatic startup and backend-state synchronization do not prompt.

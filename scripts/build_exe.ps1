@@ -1,3 +1,5 @@
+param([switch]$SkipDriverInstall)
+
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -19,7 +21,7 @@ if (-not (Test-Path -LiteralPath $python)) {
     }
 }
 
-& (Join-Path $PSScriptRoot 'setup_pawnio.ps1')
+& (Join-Path $PSScriptRoot 'setup_pawnio.ps1') -SkipDriverInstall:$SkipDriverInstall
 
 Push-Location $root
 try {

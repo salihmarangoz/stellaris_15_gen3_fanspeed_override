@@ -270,7 +270,7 @@ class BackendController:
         if not confirmed:
             raise PermissionError("Application exit requires confirmation")
         with self._state_lock:
-            result = self._service.apply_manual(80, 80)
+            result = self._service.apply_manual(100, 100)
             self._automatic = False
             self._boost_enabled = False
             self._next_auto_at = None

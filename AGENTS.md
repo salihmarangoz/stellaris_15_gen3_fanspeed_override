@@ -44,7 +44,7 @@ Keep protocol, service ownership, sensor acquisition, and presentation in these 
 - Backend requests are synchronous but must run off the GUI thread.
 - Keep the GUI worker pool serialized with at most one operation running. Timer callbacks must skip while busy; they must not enqueue an unbounded backlog.
 - Selecting Auto tells the backend to start an immediate cycle and a non-overlapping 15-second schedule. Selecting Manual stops future Auto cycles in the backend.
-- In the packaged single-process application, the window close control hides to the system tray and leaves Auto running. Only the dedicated confirmed Exit path writes both fans to 80% and stops the controller. Separate source-mode processes retain their existing watchdog behavior.
+- In the packaged single-process application, the window close control hides to the system tray and leaves Auto running. The dedicated confirmed Exit path and Windows session shutdown write both fans to 100% before exit. Windows session shutdown does not require another confirmation. Separate source-mode processes retain their existing watchdog behavior.
 - Telemetry refreshes must not overwrite Auto status or block interaction.
 - Relative status age, such as `(last updated 7 seconds ago)`, is a display-only timer and must not trigger sensor or MQTT reads.
 

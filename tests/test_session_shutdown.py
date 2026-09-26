@@ -1,0 +1,96 @@
+import os
+import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QThreadPool
+
+from PySide6.QtWidgets import QApplication, QMessageBox
+
+from frontend.fan_control_gui import FanControlWindow, ModeToggle, Worker
+
+
+class SessionShutdownTests(unittest.TestCase):
+    def make_window(self):
+        pool = QThreadPool()
+        pool.setMaxThreadCount(1)
+        return SimpleNamespace(
+            _pool=pool, _backend=Mock(), _exit_prepared=False,
+            _closing=False, _manual_apply_timer=Mock(),
+            _set_status=Mock(), close=Mock(),
+        )
+
+    def test_shutdown_waits_for_existing_operation_then_full_speed(self):
+        window = self.make_window()
+        manager = Mock()
+        calls = []
+        window._pool.start(Worker(lambda: calls.append("pending operation")))
+        window._backend.request.side_effect = lambda *a, **kw: calls.append(a[0])
+        window.close.side_effect = lambda: calls.append("close")
+        FanControlWindow.prepare_session_shutdown(window, manager)
+        self.assertEqual(calls, ["pending operation", "prepare_exit", "close"])
+        window._backend.request.assert_called_once_with(
+            "prepare_exit", confirmed=True, request_timeout=40.0
+        )
+        self.assertTrue(window._exit_prepared)
+        self.assertTrue(window._closing)
+        manager.cancel.assert_not_called()
+
+    def test_shutdown_write_failure_requests_cancellation(self):
+        window = self.make_window()
+        manager = Mock()
+        window._backend.request.side_effect = RuntimeError("write failed")
+        FanControlWindow.prepare_session_shutdown(window, manager)
+        manager.cancel.assert_called_once()
+        window.close.assert_not_called()
+        self.assertFalse(window._exit_prepared)
+        self.assertFalse(window._closing)
+
+    def test_shutdown_timeout_requests_cancellation(self):
+        window = self.make_window()
+        window._pool = Mock()
+        window._pool.waitForDone.return_value = False
+        manager = Mock()
+        FanControlWindow.prepare_session_shutdown(window, manager)
+        manager.cancel.assert_called_once()
+        window.close.assert_not_called()
+
+    def test_already_prepared_exit_does_not_write_again(self):
+        window = self.make_window()
+        window._exit_prepared = True
+        FanControlWindow.prepare_session_shutdown(window, Mock())
+        window._backend.request.assert_not_called()
+
+
+class ModeConfirmationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_confirmation_in_both_directions(self):
+        for manual in (False, True):
+            for accepted in (False, True):
+                with self.subTest(manual=manual, accepted=accepted):
+                    toggle = ModeToggle()
+                    toggle.setChecked(manual)
+                    changed = Mock()
+                    toggle.toggled.connect(changed)
+                    answer = (QMessageBox.StandardButton.Yes if accepted
+                              else QMessageBox.StandardButton.No)
+                    with patch.object(QMessageBox, "question", return_value=answer) as ask:
+                        toggle.click()
+                    ask.assert_called_once()
+                    self.assertEqual(toggle.is_manual(), not manual if accepted else manual)
+                    if accepted:
+                        changed.assert_called_once_with(not manual)
+                    else:
+                        changed.assert_not_called()
+
+    def test_programmatic_sync_does_not_prompt(self):
+        toggle = ModeToggle()
+        with patch.object(QMessageBox, "question") as ask:
+            toggle.setChecked(True)
+            toggle.setChecked(False)
+        ask.assert_not_called()

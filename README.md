@@ -50,7 +50,7 @@ The two configurable temperature points accept values from 0 to 100 C:
 
 The application interpolates linearly between the two points and rounds the result to the nearest 5%. Automatic mode never requests less than 30%. The fixed 80 C safety cap always forces 100%, even when the maximum-temperature slider is configured above 80 C.
 
-Automatic is the startup mode. It starts an immediate validated cycle followed by non-overlapping 15-second cycles. Selecting **Manual** stops future automatic cycles.
+Automatic is the startup mode. It starts an immediate validated cycle followed by non-overlapping 15-second cycles. Switching between **Automatic** and **Manual** requires confirmation; canceling keeps the current mode. Selecting **Manual** stops future automatic cycles.
 
 The selected Automatic endpoints, Manual CPU/GPU targets, and mirror setting are stored beside the packaged executable in `StellarisFanControl.json`. A missing or malformed file safely falls back to the 35/75 defaults, 50% Manual targets, and mirroring disabled. The application always starts in Automatic mode; Manual values are remembered for the next time Manual is selected.
 
@@ -65,7 +65,9 @@ The packaged application runs as one elevated process:
 
 Closing the window hides it in the system tray, so Automatic mode and fan control continue. Clicking or double-clicking the tray icon restores the window. Source-mode frontend and backend entry points retain authenticated loopback IPC for development, but the packaged application dispatches UI requests directly inside the process and does not launch a companion executable.
 
-The dedicated top-right **Exit** button and tray-menu **Exit** action require confirmation. After confirmation, the controller stops Automatic scheduling, disables Fan Boost, writes 80% to both fans, and exits only if that write succeeds.
+The dedicated top-right **Exit** button and tray-menu **Exit** action require confirmation. After confirmation, the controller stops Automatic scheduling, disables Fan Boost, writes 100% to both fans, and exits only if that write succeeds.
+
+Windows shutdown, restart, and sign-out also request 100% on both fans before acknowledging session shutdown, without an extra Exit confirmation. The request runs behind any active frontend operation; Automatic scheduling stops after a successful write. A failed or timed-out request asks Windows to cancel shutdown. If another application cancels shutdown after our write succeeds, Fan Control still exits with both targets at 100%. Forced termination, power loss, or Windows ending the process before the operation completes cannot be guaranteed.
 
 ## Requirements
 
@@ -76,7 +78,25 @@ The dedicated top-right **Exit** button and tray-menu **Exit** action require co
 - Administrator access for the application
 - NVIDIA GPU with a working `nvidia-smi.exe`
 
-## Run from Source
+## Install from a GitHub Release (No Python Required)
+
+1. Open [Releases](https://github.com/salihmarangoz/stellaris_15_gen3_fanspeed_override/releases/latest) and download `StellarisFanControl-windows-x64.zip` and its `.sha256` file from the same release. These assets appear after the first release workflow succeeds; the GitHub-generated source archives do not contain the executable.
+2. Optionally compare `Get-FileHash .\StellarisFanControl-windows-x64.zip -Algorithm SHA256` with the downloaded checksum, then extract the entire ZIP to a folder.
+3. Open PowerShell in the extracted folder and run:
+
+   ```powershell
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+   ```
+
+Approve the administrator prompt using your own Windows administrator account. The script installs or updates PawnIO when needed (an Internet connection and Windows Package Manager are required for that step), verifies the pinned AMD module, copies the application into `%ProgramFiles%\StellarisFanControl`, and registers the **Stellaris Fan Control** startup task. The compatible OEM Control Center and NVIDIA driver must already be installed.
+
+The task starts with highest privileges whenever you sign in, including after reboot. It uses your interactive sign-in rather than pre-login system boot so the window and tray icon are accessible. Installation does not launch the application. Launch `%ProgramFiles%\StellarisFanControl\StellarisFanControl.exe` yourself or sign out and back in when ready; every launch starts Automatic mode and can write fan targets. Closing the window keeps it running in the tray.
+
+To update, exit the running application using its confirmed **Exit** action, then repeat the installer from the new release. The installer preserves `StellarisFanControl.json` and replaces the existing startup task. The extracted download or source folder can subsequently move without breaking startup.
+
+To disable automatic startup, disable **Stellaris Fan Control** in Task Scheduler. To enable it again, enable that task or rerun the installer. Release builds are not code-signed; Windows may show an unknown-publisher warning.
+
+## Run from Source (Alternative)
 
 ```powershell
 py -3 -m venv .venv
@@ -109,6 +129,40 @@ The script creates the virtual environment when necessary, prepares PawnIO, inst
 - `dist\StellarisFanControl.exe`, containing the interface, controller, stylesheet, and AMD sensor module.
 
 Start the executable normally and accept its UAC prompt. Generated executables, PyInstaller files, downloaded modules, virtual environments, caches, and fan backups are excluded from Git.
+
+For packaging on a machine without the target hardware, use `scripts\build_exe.ps1 -SkipDriverInstall`. This skips only driver installation; the pinned AMD module is still downloaded and hash-verified. It does not make the application usable without PawnIO on the target laptop.
+
+## Install the Packaged Application
+
+After building, run:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\install.ps1
+```
+
+Approve the administrator prompt. The installer creates `%ProgramFiles%\StellarisFanControl`, copies `StellarisFanControl.exe` into it, and registers a per-user Task Scheduler entry named `Stellaris Fan Control`. The task starts the application with highest privileges when the installing user next signs in. A sign-in trigger is used instead of a system-boot trigger because the application requires the user's interactive desktop for its window and tray icon.
+
+Installation does not launch the application immediately. This avoids starting Automatic mode, and therefore avoids a live fan write, as a side effect of installing it.
+
+## Publish a Release
+
+The **Windows release** workflow builds on Windows x64 with Python 3.14, runs compilation and mocked/offscreen tests without accessing hardware, and packages the executable, installer, PawnIO setup script, pinned module, README, and third-party notices into a ZIP with a SHA-256 checksum. CI does not install PawnIO or launch the application.
+
+After committing and pushing the desired code and workflow, push a version tag, for example:
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+A successful tag build publishes a GitHub Release with the ZIP and checksum. Use a new tag for each release; existing releases are not overwritten. The workflow's manual **Run workflow** option on a branch builds downloadable Actions artifacts without publishing a release. Running it on a `v*` tag also publishes, so use an unreleased tag. Building locally uses the same scripts:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\build_exe.ps1
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\package_release.ps1
+```
+
+The archive is `dist\StellarisFanControl-windows-x64.zip`. Automated checks do not replace hardware validation on the supported laptop.
 
 ## Recovery
 

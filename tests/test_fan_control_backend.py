@@ -168,7 +168,7 @@ class BackendSafetyTests(unittest.TestCase):
         self.assertEqual(service.service_changes, [False])
         self.assertEqual(result["backend"]["control_method"], "direct_ec")
 
-    def test_confirmed_exit_sets_both_fans_to_80_and_stops_auto(self) -> None:
+    def test_confirmed_exit_sets_both_fans_to_100_and_stops_auto(self) -> None:
         controller = BackendController()
         service = FakeService()
         controller._service = service
@@ -176,9 +176,37 @@ class BackendSafetyTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             controller.dispatch("prepare_exit", {"confirmed": False})
         result = controller.dispatch("prepare_exit", {"confirmed": True})
-        self.assertEqual(service.writes, [(80, 80, True)])
-        self.assertEqual((result["cpu"], result["gpu"]), (80, 80))
+        self.assertEqual(service.writes, [(100, 100, True)])
+        self.assertEqual((result["cpu"], result["gpu"]), (100, 100))
         self.assertFalse(controller._snapshot()["automatic"])
+
+
+    def test_failed_exit_keeps_auto_available_and_can_retry(self) -> None:
+        controller = BackendController()
+        service = FakeService()
+        controller._service = service
+        controller.set_mode(True, 35, 75)
+        with patch.object(service, "apply_manual", side_effect=RuntimeError("write failed")):
+            with self.assertRaises(RuntimeError):
+                controller.prepare_exit(confirmed=True)
+        self.assertTrue(controller._automatic)
+        controller.prepare_exit(confirmed=True)
+        self.assertFalse(controller._automatic)
+        self.assertEqual(service.writes, [(100, 100, True)])
+
+    def test_exit_during_sensor_read_prevents_later_auto_write(self) -> None:
+        controller = BackendController()
+        service = FakeService()
+        controller._service = service
+        controller.set_mode(True, 35, 75)
+
+        def exit_during_read() -> Temperatures:
+            controller.prepare_exit(confirmed=True)
+            return Temperatures(40.0, 40.0, "test", "test")
+
+        with patch("backend.fan_control_backend.read_temperatures", side_effect=exit_during_read):
+            controller._run_auto_cycle()
+        self.assertEqual(service.writes, [(100, 100, True)])
 
 
 class DirectEcTests(unittest.TestCase):

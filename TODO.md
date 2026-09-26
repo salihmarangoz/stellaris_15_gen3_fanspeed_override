@@ -41,3 +41,7 @@ Add a lightweight check that flags tracked source files missing from `STRUCTURE.
 ## LOW - Review gauge accessibility
 
 Check contrast, scaling, keyboard navigation, screen-reader labels, and meaning without color for temperature and fan-duty gauges. Keep the layout usable at the minimum supported window size and Windows display scaling levels.
+
+## HIGH - Validate full-speed exit and Windows shutdown on target hardware
+
+With explicit authorization for live fan writes, verify both fans reach 100% on Exit, shutdown, restart, and sign-out with OEM MQTT and Direct EC. Check pending-operation handling, failure cancellation, and OEM service teardown ordering. Mock tests do not establish that Windows allows enough time or that firmware retains the targets throughout shutdown.

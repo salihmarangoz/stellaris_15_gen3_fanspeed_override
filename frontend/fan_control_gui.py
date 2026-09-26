@@ -244,6 +244,23 @@ class ModeToggle(QAbstractButton):
     def is_manual(self) -> bool:
         return self.isChecked()
 
+    def nextCheckState(self) -> None:
+        target = "Automatic" if self.is_manual() else "Manual"
+        explanation = (
+            "Automatic mode will immediately adjust both fans using CPU and GPU temperatures."
+            if self.is_manual()
+            else "Automatic adjustments will stop. You will control the fan targets manually."
+        )
+        answer = QMessageBox.question(
+            self,
+            "Confirm mode change",
+            f"Switch to {target} mode?\n\n{explanation}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            super().nextCheckState()
+
     def _update_accessibility(self, manual: bool) -> None:
         self.setAccessibleDescription("Manual mode" if manual else "Automatic mode")
         self.update()
@@ -380,7 +397,7 @@ class FanControlWindow(QMainWindow):
         heading_row.addWidget(self.control_method_label)
         self.exit_button = QPushButton("Exit")
         self.exit_button.setObjectName("exitButton")
-        self.exit_button.setToolTip("Set both fans to 80% and exit")
+        self.exit_button.setToolTip("Set both fans to 100% and exit")
         self.exit_button.clicked.connect(self.request_exit)
         heading_row.addWidget(self.exit_button)
         layout.addLayout(heading_row)
@@ -1232,8 +1249,8 @@ class FanControlWindow(QMainWindow):
         answer = QMessageBox.question(
             self,
             "Confirm exit",
-            "Set both fans to 80% and exit Fan Control?\n\n"
-            "The application will remain open if the 80% fan write fails.",
+            "Set both fans to 100% and exit Fan Control?\n\n"
+            "The application will remain open if the 100% fan write fails.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -1256,9 +1273,41 @@ class FanControlWindow(QMainWindow):
                 "prepare_exit", confirmed=True, request_timeout=45.0
             ),
             complete,
-            "Setting both fans to 80% before exit...",
+            "Setting both fans to 100% before exit...",
             on_failed=failed,
         )
+
+    def prepare_session_shutdown(self, manager: Any) -> None:
+        if self._exit_prepared:
+            return
+        # Windows must not receive our shutdown acknowledgement before the write.
+        # Queue behind any active GUI operation, without running hardware on Qt's
+        # thread or processing callbacks that could schedule another fan command.
+        self._closing = True
+        self._manual_apply_timer.stop()
+        outcome: list[str | None] = []
+
+        def prepare() -> None:
+            try:
+                self._backend.request(
+                    "prepare_exit", confirmed=True, request_timeout=40.0
+                )
+            except Exception as exc:
+                outcome.append(str(exc))
+            else:
+                outcome.append(None)
+
+        worker = Worker(prepare)
+        self._pool.start(worker)
+        finished = self._pool.waitForDone(45000)
+        if not finished or not outcome or outcome[0] is not None:
+            manager.cancel()
+            self._closing = False
+            details = outcome[0] if outcome else "Timed out waiting for fan control"
+            self._set_status(f"Shutdown fan write failed | {details}")
+            return
+        self._exit_prepared = True
+        self.close()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self._exit_prepared:
@@ -1332,6 +1381,10 @@ def main(backend: Any | None = None) -> None:
     if notify_existing_instance():
         return
     window = FanControlWindow(backend=backend)
+    app.setFallbackSessionManagementEnabled(False)
+    app.commitDataRequest.connect(
+        window.prepare_session_shutdown, Qt.ConnectionType.DirectConnection
+    )
     window._instance_server = create_instance_server(window)
     window.show()
     raise SystemExit(app.exec())
