@@ -27,6 +27,7 @@ Last reviewed: 2026-09-02
 |   |-- __init__.py              frontend package marker
 |   |-- fan_control_gui.py       normal-user PySide6 frontend
 |   |-- stellaris15gen3.css      complete Qt stylesheet
+|   |-- checkmark.svg           high-contrast startup checkbox indicator
 |   `-- requirements.txt         frontend-only runtime dependencies
 |-- backend\
 |   |-- __init__.py              backend package marker
@@ -91,7 +92,7 @@ Source-mode backups and `last-oem-curve.json` are written to `fan-backups\` in t
 
 Packaged user selections are stored as `StellarisFanControl.json` beside `StellarisFanControl.exe`. Source mode uses the ignored repository-root file of the same name.
 
-The settings file also stores `start_minimized` (false by default). Frontend startup applies it to tray/taskbar visibility; the startup task needs no additional arguments.
+The settings file also stores `start_minimized` (true by default). Frontend startup applies it to tray/taskbar visibility; the startup task needs no additional arguments.
 
 ## Generated and local-only paths
 

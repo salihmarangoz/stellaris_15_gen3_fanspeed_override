@@ -30,7 +30,7 @@ from frontend import fan_control_gui as gui
 
 backend = Mock()
 original_window = gui.FanControlWindow
-minimized = sys.argv[1] == "True"
+minimized = sys.argv[1] != "False"
 tray_available = sys.argv[2] == "True"
 def make_window(*args, **kwargs):
     window = original_window(*args, **kwargs)
@@ -58,14 +58,21 @@ with (
     patch.object(original_window, "_settings_path", return_value=Path(directory) / "settings.json"),
 ):
     settings = Path(directory) / "settings.json"
-    settings.write_text(json.dumps({"start_minimized": minimized}))
+    preference = {"start_minimized": minimized}
+    if sys.argv[1] == "missing":
+        preference = {}
+    elif sys.argv[1] == "invalid":
+        preference = {"start_minimized": "false"}
+    settings.write_text(json.dumps(preference))
     try:
         gui.main(backend)
     except SystemExit:
         backend.request.assert_not_called()
         raise
 '''
-        for minimized, tray_available in ((False, True), (True, True), (True, False)):
+        for minimized, tray_available in (
+            (False, True), (True, True), (True, False), ("missing", True), ("invalid", True)
+        ):
             with self.subTest(minimized=minimized, tray_available=tray_available):
                 result = subprocess.run(
                     [sys.executable, "-c", script, str(minimized), str(tray_available)],

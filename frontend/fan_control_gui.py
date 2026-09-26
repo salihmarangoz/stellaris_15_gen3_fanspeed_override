@@ -421,6 +421,7 @@ class FanControlWindow(QMainWindow):
         mode_row.addWidget(self.mode_toggle)
         mode_row.addStretch()
         self.start_minimized_checkbox = QCheckBox("Start minimized")
+        self.start_minimized_checkbox.setObjectName("startMinimized")
         self.start_minimized_checkbox.setToolTip(
             "Start in the system tray on the next launch. Fan control stays active."
         )
@@ -630,7 +631,10 @@ class FanControlWindow(QMainWindow):
             stylesheet_path = Path(sys._MEIPASS) / "frontend" / STYLESHEET_NAME
         else:
             stylesheet_path = Path(__file__).resolve().with_name(STYLESHEET_NAME)
-        self.setStyleSheet(stylesheet_path.read_text(encoding="utf-8"))
+        stylesheet = stylesheet_path.read_text(encoding="utf-8")
+        self.setStyleSheet(stylesheet.replace(
+            "@CHECKMARK_PATH@", (stylesheet_path.parent / "checkmark.svg").as_posix()
+        ))
 
     @staticmethod
     def _icon_path() -> Path:
@@ -669,7 +673,7 @@ class FanControlWindow(QMainWindow):
             "manual_cpu": 50,
             "manual_gpu": 50,
             "mirror_fans": False,
-            "start_minimized": False,
+            "start_minimized": True,
         }
         try:
             loaded = json.loads(cls._settings_path().read_text(encoding="utf-8"))
@@ -692,7 +696,11 @@ class FanControlWindow(QMainWindow):
                 "manual_cpu": cpu,
                 "manual_gpu": gpu,
                 "mirror_fans": mirror,
-                "start_minimized": loaded.get("start_minimized") is True,
+                "start_minimized": (
+                    loaded["start_minimized"]
+                    if isinstance(loaded.get("start_minimized"), bool)
+                    else defaults["start_minimized"]
+                ),
             }
         except (OSError, ValueError, TypeError):
             return defaults

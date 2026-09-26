@@ -46,6 +46,7 @@ try {
         --uac-admin `
         --icon "$appIcon" `
         --add-data "$styleSheet;frontend" `
+        --add-data "$(Join-Path $root 'frontend\checkmark.svg');frontend" `
         --add-data "$appIconPng;assets" `
         --add-data "$pawnModule;pawnio" `
         --name StellarisFanControl `

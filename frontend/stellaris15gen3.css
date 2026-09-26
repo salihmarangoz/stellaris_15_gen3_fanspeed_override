@@ -101,6 +101,36 @@ QCheckBox::indicator {
     height: 17px;
 }
 
+QCheckBox#startMinimized {
+    color: #eef1f3;
+    background: #292e33;
+    border: 1px solid #59636c;
+    border-radius: 6px;
+    padding: 8px 12px;
+    spacing: 10px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+QCheckBox#startMinimized:hover, QCheckBox#startMinimized:focus {
+    background: #343a40;
+    border-color: #9de8d5;
+}
+
+QCheckBox#startMinimized::indicator {
+    width: 20px;
+    height: 20px;
+    border: 2px solid #aeb6bd;
+    border-radius: 4px;
+    background: #17191c;
+}
+
+QCheckBox#startMinimized::indicator:checked {
+    background: #25b99a;
+    border-color: #25b99a;
+    image: url("@CHECKMARK_PATH@");
+}
+
 QPushButton {
     min-height: 36px;
     padding: 0 14px;

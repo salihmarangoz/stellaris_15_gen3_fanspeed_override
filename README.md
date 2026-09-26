@@ -65,7 +65,7 @@ The packaged application runs as one elevated process:
 
 Closing the window hides it in the system tray, so Automatic mode and fan control continue. Clicking or double-clicking the tray icon restores the window. Source-mode frontend and backend entry points retain authenticated loopback IPC for development, but the packaged application dispatches UI requests directly inside the process and does not launch a companion executable.
 
-Enable **Start minimized** beside the control-mode selector to start in the system tray on subsequent launches, including sign-in startup. This preference is saved in `StellarisFanControl.json` and defaults to off. Changing it does not hide the current window or change fan control. If no system tray is available, the window starts minimized on the taskbar. The tray's **Show Fan Control** action or launching the app again restores the window.
+Enable **Start minimized** beside the control-mode selector to start in the system tray on subsequent launches, including sign-in startup. This preference is saved in `StellarisFanControl.json` and defaults to on. Changing it does not hide the current window or change fan control. If no system tray is available, the window starts minimized on the taskbar. The tray's **Show Fan Control** action or launching the app again restores the window.
 
 The dedicated top-right **Exit** button and tray-menu **Exit** action require confirmation. After confirmation, the controller stops Automatic scheduling, disables Fan Boost, writes 100% to both fans, and exits only if that write succeeds.
 
