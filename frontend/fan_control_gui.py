@@ -420,6 +420,12 @@ class FanControlWindow(QMainWindow):
         self.mode_toggle.toggled.connect(self._mode_changed)
         mode_row.addWidget(self.mode_toggle)
         mode_row.addStretch()
+        self.start_minimized_checkbox = QCheckBox("Start minimized")
+        self.start_minimized_checkbox.setToolTip(
+            "Start in the system tray on the next launch. Fan control stays active."
+        )
+        self.start_minimized_checkbox.toggled.connect(self._start_minimized_toggled)
+        mode_row.addWidget(self.start_minimized_checkbox)
         layout.addLayout(mode_row)
 
         columns = QHBoxLayout()
@@ -663,6 +669,7 @@ class FanControlWindow(QMainWindow):
             "manual_cpu": 50,
             "manual_gpu": 50,
             "mirror_fans": False,
+            "start_minimized": False,
         }
         try:
             loaded = json.loads(cls._settings_path().read_text(encoding="utf-8"))
@@ -685,6 +692,7 @@ class FanControlWindow(QMainWindow):
                 "manual_cpu": cpu,
                 "manual_gpu": gpu,
                 "mirror_fans": mirror,
+                "start_minimized": loaded.get("start_minimized") is True,
             }
         except (OSError, ValueError, TypeError):
             return defaults
@@ -704,6 +712,9 @@ class FanControlWindow(QMainWindow):
             self.mirror_fans_checkbox.setChecked(
                 bool(self._preferences["mirror_fans"])
             )
+            self.start_minimized_checkbox.setChecked(
+                bool(self._preferences["start_minimized"])
+            )
         finally:
             self._syncing = False
         self._last_manual_values = (self.cpu_slider.value(), self.gpu_slider.value())
@@ -716,6 +727,7 @@ class FanControlWindow(QMainWindow):
             "manual_cpu": self.cpu_spin.value(),
             "manual_gpu": self.gpu_spin.value(),
             "mirror_fans": self.mirror_fans_checkbox.isChecked(),
+            "start_minimized": self.start_minimized_checkbox.isChecked(),
         }
         path = self._settings_path()
         temporary = path.with_suffix(path.suffix + ".tmp")
@@ -726,6 +738,17 @@ class FanControlWindow(QMainWindow):
             temporary.replace(path)
         except OSError as exc:
             self._set_status(f"Could not save settings | {exc}")
+
+    def _start_minimized_toggled(self, enabled: bool) -> None:
+        if not self._syncing:
+            self._preferences["start_minimized"] = enabled
+            self._save_preferences()
+
+    def show_on_startup(self) -> None:
+        if not self.start_minimized_checkbox.isChecked():
+            self.show()
+        elif not QSystemTrayIcon.isSystemTrayAvailable():
+            self.showMinimized()
 
     def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (
@@ -1385,7 +1408,7 @@ def main(backend: Any | None = None) -> None:
         window.prepare_session_shutdown, Qt.ConnectionType.DirectConnection
     )
     window._instance_server = create_instance_server(window)
-    window.show()
+    window.show_on_startup()
     raise SystemExit(app.exec())
 
 

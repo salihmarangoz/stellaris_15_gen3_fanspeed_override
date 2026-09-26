@@ -91,6 +91,8 @@ Source-mode backups and `last-oem-curve.json` are written to `fan-backups\` in t
 
 Packaged user selections are stored as `StellarisFanControl.json` beside `StellarisFanControl.exe`. Source mode uses the ignored repository-root file of the same name.
 
+The settings file also stores `start_minimized` (false by default). Frontend startup applies it to tray/taskbar visibility; the startup task needs no additional arguments.
+
 ## Generated and local-only paths
 
 The following are ignored and must not be committed:

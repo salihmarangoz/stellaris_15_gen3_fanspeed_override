@@ -19,39 +19,61 @@ class FrontendStartupTests(unittest.TestCase):
     def test_real_qt_startup_reaches_event_loop_without_hardware(self):
         # Exercise real QApplication/window startup in a separate process.
         script = '''
+import json
+import sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 from frontend import fan_control_gui as gui
 
 backend = Mock()
 original_window = gui.FanControlWindow
+minimized = sys.argv[1] == "True"
+tray_available = sys.argv[2] == "True"
 def make_window(*args, **kwargs):
     window = original_window(*args, **kwargs)
     def check_window():
-        QApplication.instance().exit(0 if window.isVisible() else 3)
+        expected_visible = not minimized or not tray_available
+        valid = window.isVisible() == expected_visible
+        if minimized and not tray_available:
+            valid = valid and window.isMinimized()
+        window.activate_from_second_instance()
+        valid = valid and window.isVisible() and not window.isMinimized()
+        window.start_minimized_checkbox.setChecked(not minimized)
+        saved = json.loads(settings.read_text())
+        valid = valid and saved["start_minimized"] == (not minimized)
+        QApplication.instance().exit(0 if valid else 3)
     QTimer.singleShot(100, check_window)
     return window
 
 with (
+    TemporaryDirectory() as directory,
     patch.object(gui, "notify_existing_instance", return_value=False),
     patch.object(gui, "create_instance_server"),
     patch.object(original_window, "_load_initial_state"),
     patch.object(gui, "FanControlWindow", side_effect=make_window),
+    patch.object(QSystemTrayIcon, "isSystemTrayAvailable", return_value=tray_available),
+    patch.object(original_window, "_settings_path", return_value=Path(directory) / "settings.json"),
 ):
+    settings = Path(directory) / "settings.json"
+    settings.write_text(json.dumps({"start_minimized": minimized}))
     try:
         gui.main(backend)
     except SystemExit:
         backend.request.assert_not_called()
         raise
 '''
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            cwd=Path(__file__).resolve().parents[1],
-            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
-            capture_output=True, text=True, timeout=20,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for minimized, tray_available in ((False, True), (True, True), (True, False)):
+            with self.subTest(minimized=minimized, tray_available=tray_available):
+                result = subprocess.run(
+                    [sys.executable, "-c", script, str(minimized), str(tray_available)],
+                    cwd=Path(__file__).resolve().parents[1],
+                    env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+                    capture_output=True, text=True, timeout=20,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class SessionShutdownTests(unittest.TestCase):

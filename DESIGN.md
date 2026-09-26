@@ -78,6 +78,8 @@ The automatic curve graph visualizes the configured temperature endpoints and th
 
 All styling lives in `frontend/stellaris15gen3.css`; Python code supplies structure, state, and custom-widget painting.
 
+The always-available Start minimized checkbox persists a boolean `start_minimized` preference, defaulting to false for existing settings. It only changes initial window visibility on the next launch. With a system tray available the window stays hidden; without one it is minimized on the taskbar so it remains accessible. Tray activation and second-instance activation still restore the window. Automatic scheduling is independent of this preference.
+
 ## Recorded decisions
 
 | Timestamp | Decision | Reason and consequence |
