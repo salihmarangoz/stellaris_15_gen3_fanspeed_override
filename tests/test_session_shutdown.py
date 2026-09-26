@@ -1,5 +1,8 @@
 import os
+import subprocess
+import sys
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -10,6 +13,45 @@ from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from frontend.fan_control_gui import FanControlWindow, ModeToggle, Worker
+
+
+class FrontendStartupTests(unittest.TestCase):
+    def test_real_qt_startup_reaches_event_loop_without_hardware(self):
+        # Exercise real QApplication/window startup in a separate process.
+        script = '''
+from unittest.mock import Mock, patch
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
+from frontend import fan_control_gui as gui
+
+backend = Mock()
+original_window = gui.FanControlWindow
+def make_window(*args, **kwargs):
+    window = original_window(*args, **kwargs)
+    def check_window():
+        QApplication.instance().exit(0 if window.isVisible() else 3)
+    QTimer.singleShot(100, check_window)
+    return window
+
+with (
+    patch.object(gui, "notify_existing_instance", return_value=False),
+    patch.object(gui, "create_instance_server"),
+    patch.object(original_window, "_load_initial_state"),
+    patch.object(gui, "FanControlWindow", side_effect=make_window),
+):
+    try:
+        gui.main(backend)
+    except SystemExit:
+        backend.request.assert_not_called()
+        raise
+'''
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[1],
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class SessionShutdownTests(unittest.TestCase):

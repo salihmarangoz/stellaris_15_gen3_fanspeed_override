@@ -45,7 +45,7 @@ Last reviewed: 2026-09-02
 |   |-- __init__.py              test package marker
 |   |-- test_fan_control_backend.py
 |                                pure/mocked backend, safety, and IPC tests
-|   `-- test_session_shutdown.py mocked Qt shutdown and mode-confirmation tests
+|   `-- test_session_shutdown.py real Qt startup and mocked shutdown/mode tests
 |-- scripts\
 |   |-- launch_fan_control.ps1   source setup and normal-user launcher
 |   |-- run_fan_control_gui.cmd  command-shell entry point

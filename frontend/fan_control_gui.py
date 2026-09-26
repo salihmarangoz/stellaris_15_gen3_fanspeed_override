@@ -1381,7 +1381,6 @@ def main(backend: Any | None = None) -> None:
     if notify_existing_instance():
         return
     window = FanControlWindow(backend=backend)
-    app.setFallbackSessionManagementEnabled(False)
     app.commitDataRequest.connect(
         window.prepare_session_shutdown, Qt.ConnectionType.DirectConnection
     )
