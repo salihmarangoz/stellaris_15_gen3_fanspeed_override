@@ -7,3 +7,6 @@ dist/
 *.spec
 third_party/pawnio/*.bin
 StellarisFanControl.json
+stress-*.csv
+*.dat
+*.dsl

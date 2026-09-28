@@ -24,3 +24,15 @@ The module is restricted to approved AMD MSR and SMN operations. This applicatio
 When the OEM MQTT broker is unavailable, the application loads the locally installed Control Center 3.9.42.1 `ACPIDriverDll.dll` and uses its `ReadEC` and `WriteEC` exports with the installed `UWACPIDriver`. These OEM files are not copied into or distributed with this repository.
 
 The validated `ACPIDriverDll.dll` SHA-256 is `345CFF34994351E126C4A7EF9FFC8E09FDE005951F1A63AF50D1945F28961A33`. A different library build disables direct control until it is separately analyzed and validated on the target laptop.
+
+## Linux EC interface
+
+The Linux version uses no third-party binaries or kernel modules. It maps the EC RAM window that the laptop's own ACPI firmware declares (`\_SB.INOU`, `0xFE200000`, 4 KiB) through `/dev/mem`, gated by the SHA-256 of the BIOS N.1.61A15 DSDT (`B35BF53709DB9AC190CE13489619FFCF7793B78B65C7888D76E25FFC49EAEA62`).
+
+Register meanings and the fan-table zone thresholds were cross-checked against the GPL-licensed mainline Linux `uniwill-laptop` driver (`drivers/platform/x86/uniwill/`) and TUXEDO Computers' `tuxedo-drivers`. No source code from either project is copied into this repository; only register addresses and numeric values used for interoperability are reused.
+
+## PySide6
+
+The GUI uses PySide6 (Qt for Python), installed from PyPI into the application's own virtual environment on Linux and bundled into the Windows executable. PySide6 and Qt are available under the GNU LGPL v3 (and other licenses from The Qt Company).
+
+- Project: <https://pypi.org/project/PySide6/>

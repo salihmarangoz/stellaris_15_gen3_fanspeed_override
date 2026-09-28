@@ -1,0 +1,9 @@
+#!/bin/sh
+# Installed as /usr/lib/systemd/system-sleep/stellaris-fan-control.
+# After resume, ask the fan-control service to re-verify the EC state at once.
+case "$1" in
+    post)
+        systemctl kill --kill-whom=main --signal=SIGUSR1 stellaris-fan-control.service >/dev/null 2>&1 || true
+        ;;
+esac
+exit 0

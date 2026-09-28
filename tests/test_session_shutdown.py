@@ -165,3 +165,71 @@ class ModeConfirmationTests(unittest.TestCase):
             toggle.setChecked(True)
             toggle.setChecked(False)
         ask.assert_not_called()
+
+
+class LinuxQuitTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_linux_quit_asks_and_never_writes_fans(self):
+        from tempfile import TemporaryDirectory
+
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(FanControlWindow, "_load_initial_state"),
+            patch.object(
+                FanControlWindow, "_settings_path",
+                return_value=Path(directory) / "settings.json",
+            ),
+        ):
+            backend = Mock()
+            window = FanControlWindow(backend=backend)
+            window._linux = True
+            with patch.object(
+                QMessageBox, "question", return_value=QMessageBox.StandardButton.No
+            ):
+                window.request_exit()
+            self.assertFalse(window._exit_prepared)
+            with (
+                patch.object(
+                    QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
+                ),
+                patch.object(window, "close") as close,
+            ):
+                window.request_exit()
+            close.assert_called_once()
+            self.assertTrue(window._exit_prepared)
+            self.assertNotIn(
+                "prepare_exit", [call.args[0] for call in backend.request.call_args_list]
+            )
+            window._closing = True
+            window.tray_icon.hide()
+
+
+class TrayMenuTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_about_follows_show_and_opens_the_project_page(self):
+        from tempfile import TemporaryDirectory
+
+        from frontend import fan_control_gui as gui
+
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(FanControlWindow, "_load_initial_state"),
+            patch.object(
+                FanControlWindow, "_settings_path",
+                return_value=Path(directory) / "settings.json",
+            ),
+        ):
+            window = FanControlWindow(backend=Mock())
+            actions = [a.text() for a in window.tray_icon.contextMenu().actions() if a.text()]
+            self.assertEqual(actions[:2], ["Show Fan Control", "About"])
+            with patch.object(gui.QDesktopServices, "openUrl", return_value=True) as open_url:
+                window.open_project_website()
+            self.assertEqual(open_url.call_args.args[0].toString(), gui.PROJECT_URL)
+            window._closing = True
+            window.tray_icon.hide()

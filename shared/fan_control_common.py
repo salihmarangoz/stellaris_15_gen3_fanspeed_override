@@ -4,6 +4,9 @@ DEFAULT_MAX_FAN_TEMP = 75
 MIN_AUTO_DUTY = 30
 MAX_AUTO_DUTY = 100
 MAX_SAFE_AUTO_TEMP = 80
+# With no valid CPU or GPU reading for this long, both fans are forced to 100%.
+SENSOR_STALE_TIMEOUT_SECONDS = 30.0
+SENSOR_WATCHDOG_INTERVAL_SECONDS = 5.0
 
 
 def auto_target(

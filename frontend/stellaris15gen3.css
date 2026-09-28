@@ -97,8 +97,21 @@ QCheckBox {
 }
 
 QCheckBox::indicator {
-    width: 17px;
-    height: 17px;
+    width: 16px;
+    height: 16px;
+    border: 2px solid #aeb6bd;
+    border-radius: 4px;
+    background: #17191c;
+}
+
+QCheckBox::indicator:checked {
+    background: #25b99a;
+    border-color: #25b99a;
+    image: url("@CHECKMARK_PATH@");
+}
+
+QCheckBox::indicator:disabled {
+    border-color: #59636c;
 }
 
 QCheckBox#startMinimized {
@@ -174,4 +187,31 @@ QPushButton#exitButton:hover {
 QPushButton:disabled, QSpinBox:disabled, QSlider:disabled {
     color: #727980;
     background: #24272a;
+}
+
+QFrame#panel QLabel#limitBadge,
+QFrame#panel QLabel#limitBadgeWarning,
+QFrame#panel QLabel#limitBadgePending {
+    border-radius: 5px;
+    padding: 2px 12px;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+QFrame#panel QLabel#limitBadge {
+    color: #9de8d5;
+    background: #203a34;
+    border: 1px solid #32695c;
+}
+
+QFrame#panel QLabel#limitBadgeWarning {
+    color: #ffd9a8;
+    background: #3d3020;
+    border: 1px solid #7a5b2c;
+}
+
+QFrame#panel QLabel#limitBadgePending {
+    color: #d8dde1;
+    background: #292e33;
+    border: 1px solid #454c52;
 }

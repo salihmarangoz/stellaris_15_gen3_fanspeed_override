@@ -388,6 +388,7 @@ class IpcTests(unittest.TestCase):
     def test_normal_frontend_requests_an_elevated_backend(self) -> None:
         expected = component_command("backend", "--no-frontend")
         with (
+            patch("shared.fan_control_ipc.component_command", return_value=expected),
             patch("shared.fan_control_ipc.os.name", "nt"),
             patch("shared.fan_control_ipc.is_administrator", return_value=False),
             patch("shared.fan_control_ipc._launch_elevated") as elevated,
@@ -398,6 +399,7 @@ class IpcTests(unittest.TestCase):
     def test_elevated_backend_requests_a_normal_frontend(self) -> None:
         expected = component_command("frontend")
         with (
+            patch("shared.fan_control_ipc.component_command", return_value=expected),
             patch("shared.fan_control_ipc.os.name", "nt"),
             patch("shared.fan_control_ipc.is_administrator", return_value=True),
             patch("shared.fan_control_ipc._launch_unelevated") as unelevated,
@@ -439,7 +441,7 @@ class IpcTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 try:
-                    self.assertTrue(BackendClient(timeout=1.0).ping())
+                    self.assertTrue(BackendClient(timeout=1.0, transport="tcp").ping())
                     self.assertEqual(controller.command, "ping")
                 finally:
                     server.shutdown()

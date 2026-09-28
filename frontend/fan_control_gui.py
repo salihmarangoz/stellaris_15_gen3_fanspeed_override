@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import time
 import traceback
@@ -6,8 +7,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QCloseEvent, QIcon, QPainter, QPen
+from PySide6.QtCore import QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QColor, QCloseEvent, QDesktopServices, QIcon, QPainter, QPen
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -36,8 +37,10 @@ from shared.fan_control_common import (
 )
 from shared.fan_control_ipc import (
     BackendClient,
+    LINUX_SERVICE_NAME,
     RESTART_COOLDOWN_SECONDS,
     ensure_backend,
+    is_linux,
     launch_component,
 )
 
@@ -46,6 +49,17 @@ INSTANCE_SERVER_NAME = "stellaris15gen3.fan-control"
 STYLESHEET_NAME = "stellaris15gen3.css"
 ICON_FILENAME = "stellaris-fan-control.png"
 SETTINGS_FILENAME = "StellarisFanControl.json"
+PROJECT_URL = "https://github.com/salihmarangoz/stellaris_15_gen3_fanspeed_override"
+LINUX_CONFIG_DIRECTORY = "stellaris-fan-control"
+GPU_POWER_STEP_WATTS = 5
+CPU_POWER_GAUGE_MAX_WATTS = 60
+GPU_POWER_GAUGE_MAX_WATTS = 165
+# NVIDIA applied cTGP and Dynamic Boost changes within 1.5 s in the live test.
+GPU_LIMIT_SETTLE_SECONDS = 1.5
+GPU_LIMIT_WAIT_SECONDS = 12.0
+GPU_LIMIT_REFRESH_DELAYS_MS = (2000, 4000, 7000)
+DEFAULT_GPU_POWER_MAX_OFFSET = 50
+SERVICE_START_HINT = f"start it with 'sudo systemctl start {LINUX_SERVICE_NAME}'"
 
 
 class FanCurveGraph(QWidget):
@@ -53,7 +67,7 @@ class FanCurveGraph(QWidget):
         super().__init__()
         self._minimum_temp = DEFAULT_MIN_FAN_TEMP
         self._maximum_temp = DEFAULT_MAX_FAN_TEMP
-        self.setMinimumHeight(190)
+        self.setMinimumHeight(150)
 
     def set_temperatures(self, minimum_temp: int, maximum_temp: int) -> None:
         self._minimum_temp = minimum_temp
@@ -116,27 +130,62 @@ class FanCurveGraph(QWidget):
 
 
 class SensorGauge(QWidget):
-    def __init__(self, title: str, unit: str, *, temperature_colors: bool) -> None:
+    def __init__(
+        self,
+        title: str,
+        unit: str,
+        *,
+        temperature_colors: bool,
+        maximum: float = 100.0,
+        decimals: int | None = None,
+    ) -> None:
         super().__init__()
         self._title = title
         self._unit = unit
         self._temperature_colors = temperature_colors
+        self._maximum = maximum
+        self._decimals = (1 if temperature_colors else 0) if decimals is None else decimals
         self._value: float | None = None
-        self.setMinimumSize(135, 125)
+        self._placeholder = "--"
+        self._detail = ""
+        self.setMinimumSize(110, 112)
         self.setAccessibleName(f"{title} gauge")
 
-    def set_value(self, value: float | None) -> None:
+    def set_maximum(self, maximum: float) -> None:
+        if maximum > 0 and maximum != self._maximum:
+            self._maximum = maximum
+            self.update()
+
+    def set_value(
+        self, value: float | None, *, placeholder: str = "--", detail: str = ""
+    ) -> None:
         self._value = value
+        self._placeholder = placeholder
+        self._detail = detail
         if value is None:
-            self.setAccessibleDescription("Value unavailable")
+            self.setAccessibleDescription(
+                "Value unavailable" if placeholder == "--" else placeholder
+            )
         else:
-            self.setAccessibleDescription(f"{value:.1f} {self._unit}")
+            self.setAccessibleDescription(
+                f"{value:.{self._decimals}f} {self._unit}" + (f", {detail}" if detail else "")
+            )
         self.update()
 
     def paintEvent(self, event: object) -> None:
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        width = float(self.width())
+        title_height = 20.0
+        scale_height = 14.0
+        # Every gauge reserves the detail line so all gauges share one size.
+        detail_height = 16.0
+        available = self.height() - title_height - 6 - scale_height - detail_height
+        diameter = max(40.0, min(width - 24.0, 2.0 * available, 150.0))
+        top = title_height + 6
+        arc_rect = QRectF((width - diameter) / 2, top, diameter, diameter)
+        center_y = top + diameter / 2
 
         title_font = painter.font()
         title_font.setBold(True)
@@ -144,14 +193,13 @@ class SensorGauge(QWidget):
         painter.setFont(title_font)
         painter.setPen(QColor("#eef1f3"))
         painter.drawText(
-            self.rect().adjusted(0, 0, 0, -94),
+            QRectF(0, 0, width, title_height),
             Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
             self._title,
         )
 
-        diameter = min(self.width() - 20, 150)
-        arc_rect = QRectF((self.width() - diameter) / 2, 32, diameter, diameter)
-        background_pen = QPen(QColor("#34393e"), 11)
+        pen_width = max(7.0, diameter * 0.075)
+        background_pen = QPen(QColor("#34393e"), pen_width)
         background_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(background_pen)
         painter.drawArc(arc_rect, 180 * 16, -180 * 16)
@@ -159,32 +207,33 @@ class SensorGauge(QWidget):
         if self._value is None:
             gauge_color = QColor("#727980")
             span = 0
-            value_text = f"-- {self._unit}"
+            value_text = (
+                f"-- {self._unit}" if self._placeholder == "--" else self._placeholder
+            )
         else:
-            displayed = max(0.0, min(100.0, self._value))
-            if self._temperature_colors and displayed >= 80:
+            fraction = max(0.0, min(1.0, self._value / self._maximum))
+            if self._temperature_colors and self._value >= 80:
                 gauge_color = QColor("#e35d6a")
-            elif self._temperature_colors and displayed >= 60:
+            elif self._temperature_colors and self._value >= 60:
                 gauge_color = QColor("#e4b45d")
             else:
                 gauge_color = QColor("#25b99a")
-            span = round(-180 * 16 * displayed / 100)
-            decimals = 1 if self._temperature_colors else 0
-            value_text = f"{self._value:.{decimals}f} {self._unit}"
+            span = round(-180 * 16 * fraction)
+            value_text = f"{self._value:.{self._decimals}f} {self._unit}"
 
-        value_pen = QPen(gauge_color, 11)
+        value_pen = QPen(gauge_color, pen_width)
         value_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(value_pen)
         painter.drawArc(arc_rect, 180 * 16, span)
 
         value_font = painter.font()
         value_font.setBold(True)
-        value_font.setPointSize(14)
+        value_font.setPointSize(14 if diameter >= 110 else 12)
         painter.setFont(value_font)
         painter.setPen(gauge_color)
         painter.drawText(
-            self.rect().adjusted(0, 66, 0, 0),
-            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+            QRectF(0, center_y - 32, width, 28),
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom,
             value_text,
         )
 
@@ -193,8 +242,23 @@ class SensorGauge(QWidget):
         scale_font.setPointSize(8)
         painter.setFont(scale_font)
         painter.setPen(QColor("#aeb6bd"))
-        painter.drawText(5, 105, "0")
-        painter.drawText(self.width() - 27, 105, "100")
+        scale_rect = QRectF(arc_rect.left() - 8, center_y, diameter + 16, scale_height)
+        painter.drawText(scale_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "0")
+        painter.drawText(
+            scale_rect,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            f"{self._maximum:g}",
+        )
+
+        if self._detail:
+            detail_font = painter.font()
+            detail_font.setPointSize(10)
+            painter.setFont(detail_font)
+            painter.drawText(
+                QRectF(0, center_y + scale_height, width, detail_height),
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+                self._detail,
+            )
 
 
 class DisabledPanelOverlay(QWidget):
@@ -330,8 +394,9 @@ class FanControlWindow(QMainWindow):
     def __init__(self, backend: Any | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Fan Control")
-        self.setMinimumSize(1080, 650)
-        self.resize(1240, 720)
+        self.setMinimumSize(1080, 760)
+        self.resize(1240, 800)
+        self._linux = is_linux()
 
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(1)
@@ -358,6 +423,19 @@ class FanControlWindow(QMainWindow):
         self._manual_apply_timer.setSingleShot(True)
         self._manual_apply_timer.setInterval(300)
         self._manual_apply_timer.timeout.connect(self.apply_speeds)
+        self._gpu_power_apply_timer = QTimer(self)
+        self._gpu_power_apply_timer.setSingleShot(True)
+        self._gpu_power_apply_timer.setInterval(400)
+        self._gpu_power_apply_timer.timeout.connect(self.apply_gpu_power)
+        self._gpu_power_available = False
+        self._gpu_power_base: float | None = None
+        self._gpu_power_state: dict[str, Any] = {}
+        self._faults: dict[str, str | None] = {}
+        self._gpu_power_state_at = 0.0
+        self._gpu_power_changed_at: float | None = None
+        self._gpu_power_applied: int | None = None
+        self._state_loaded = False
+        self._last_state_attempt = 0.0
 
         self._build_ui()
         self._apply_preferences_to_controls()
@@ -384,8 +462,8 @@ class FanControlWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(18)
+        layout.setContentsMargins(28, 18, 28, 18)
+        layout.setSpacing(12)
 
         heading_row = QHBoxLayout()
         heading = QLabel("Fan Control")
@@ -395,9 +473,13 @@ class FanControlWindow(QMainWindow):
         self.control_method_label = QLabel("Detecting control...")
         self.control_method_label.setObjectName("methodBadge")
         heading_row.addWidget(self.control_method_label)
-        self.exit_button = QPushButton("Exit")
+        self.exit_button = QPushButton("Quit" if self._linux else "Exit")
         self.exit_button.setObjectName("exitButton")
-        self.exit_button.setToolTip("Set both fans to 100% and exit")
+        self.exit_button.setToolTip(
+            "Close this window and the tray icon. The fan-control service keeps running."
+            if self._linux
+            else "Set both fans to 100% and exit"
+        )
         self.exit_button.clicked.connect(self.request_exit)
         heading_row.addWidget(self.exit_button)
         layout.addLayout(heading_row)
@@ -436,8 +518,8 @@ class FanControlWindow(QMainWindow):
         self.auto_panel = ControlPanel()
         self.auto_panel.setObjectName("panel")
         auto_layout = QVBoxLayout(self.auto_panel)
-        auto_layout.setContentsMargins(18, 18, 18, 18)
-        auto_layout.setSpacing(12)
+        auto_layout.setContentsMargins(18, 14, 18, 14)
+        auto_layout.setSpacing(8)
         auto_title = QLabel("Automatic")
         auto_title.setObjectName("sectionTitle")
         auto_layout.addWidget(auto_title)
@@ -479,8 +561,8 @@ class FanControlWindow(QMainWindow):
         self.manual_panel = ControlPanel()
         self.manual_panel.setObjectName("panel")
         manual_layout = QVBoxLayout(self.manual_panel)
-        manual_layout.setContentsMargins(18, 18, 18, 18)
-        manual_layout.setSpacing(18)
+        manual_layout.setContentsMargins(18, 14, 18, 14)
+        manual_layout.setSpacing(14)
         manual_title = QLabel("Manual control")
         manual_title.setObjectName("sectionTitle")
         manual_layout.addWidget(manual_title)
@@ -513,8 +595,8 @@ class FanControlWindow(QMainWindow):
         self.sensor_panel = QFrame()
         self.sensor_panel.setObjectName("panel")
         sensor_layout = QVBoxLayout(self.sensor_panel)
-        sensor_layout.setContentsMargins(18, 18, 18, 18)
-        sensor_layout.setSpacing(14)
+        sensor_layout.setContentsMargins(18, 14, 18, 14)
+        sensor_layout.setSpacing(10)
         sensor_title = QLabel("Sensor values")
         sensor_title.setObjectName("sectionTitle")
         sensor_layout.addWidget(sensor_title)
@@ -538,14 +620,26 @@ class FanControlWindow(QMainWindow):
         fan_row.addWidget(self.cpu_fan_gauge, 1)
         fan_row.addWidget(self.gpu_fan_gauge, 1)
         sensor_layout.addLayout(fan_row)
-        self.source_label = QLabel("CPU: PawnIO Ryzen SMN | GPU: NVIDIA driver")
-        self.source_label.setWordWrap(True)
-        self.source_label.setObjectName("statusText")
-        sensor_layout.addWidget(self.source_label)
+        power_row = QHBoxLayout()
+        power_row.setSpacing(12)
+        self.cpu_power_gauge = SensorGauge(
+            "CPU power", "W", temperature_colors=False, maximum=CPU_POWER_GAUGE_MAX_WATTS, decimals=1
+        )
+        self.gpu_power_gauge = SensorGauge(
+            "GPU power", "W", temperature_colors=False, maximum=GPU_POWER_GAUGE_MAX_WATTS, decimals=1
+        )
+        power_row.addWidget(self.cpu_power_gauge, 1)
+        power_row.addWidget(self.gpu_power_gauge, 1)
+        sensor_layout.addLayout(power_row)
+        self.fault_label = QLabel()
+        self.fault_label.setObjectName("warningText")
+        self.fault_label.setWordWrap(True)
+        self.fault_label.hide()
+        sensor_layout.addWidget(self.fault_label)
         sensor_layout.addStretch()
         self.boost_button = QPushButton("Fan Boost 100%")
         self.boost_button.setCheckable(True)
-        self.boost_button.setToolTip("Toggle the OEM 100% fan override")
+        self.boost_button.setToolTip("Toggle the EC 100% fan override")
         self.boost_button.toggled.connect(self.toggle_boost)
         sensor_layout.addWidget(self.boost_button)
         self.oem_service_button = QPushButton("Stop GCUBridge")
@@ -553,10 +647,69 @@ class FanControlWindow(QMainWindow):
             "Start or stop the OEM fan-control service after confirmation"
         )
         self.oem_service_button.clicked.connect(self.toggle_oem_service)
+        self.oem_service_button.setVisible(not self._linux)
         sensor_layout.addWidget(self.oem_service_button)
         columns.addWidget(self.sensor_panel, 1)
 
+        self._build_gpu_power_row(layout)
         self._update_mode_panels()
+
+    def _build_gpu_power_row(self, parent_layout: QVBoxLayout) -> None:
+        self.gpu_power_panel = ControlPanel()
+        self.gpu_power_panel.setObjectName("panel")
+        column = QVBoxLayout(self.gpu_power_panel)
+        column.setContentsMargins(18, 10, 18, 10)
+        column.setSpacing(4)
+        controls = QHBoxLayout()
+        controls.setSpacing(16)
+        title = QLabel("GPU power limit")
+        title.setObjectName("fanName")
+        controls.addWidget(title)
+        self.gpu_power_slider = QSlider(Qt.Orientation.Horizontal)
+        self.gpu_power_slider.setRange(0, DEFAULT_GPU_POWER_MAX_OFFSET)
+        self.gpu_power_slider.setSingleStep(GPU_POWER_STEP_WATTS)
+        self.gpu_power_slider.setPageStep(GPU_POWER_STEP_WATTS)
+        self.gpu_power_slider.setTickInterval(GPU_POWER_STEP_WATTS)
+        self.gpu_power_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.gpu_power_slider.setAccessibleName("GPU sustained power limit")
+        self.gpu_power_slider.valueChanged.connect(self._gpu_power_value_changed)
+        self.gpu_power_slider.sliderReleased.connect(self._schedule_gpu_power_apply)
+        self.gpu_power_slider.actionTriggered.connect(
+            lambda _action: None
+            if self.gpu_power_slider.isSliderDown()
+            else self._schedule_gpu_power_apply()
+        )
+        controls.addWidget(self.gpu_power_slider, 1)
+        self.dynamic_boost_checkbox = QCheckBox("Dynamic Boost")
+        self.dynamic_boost_checkbox.setToolTip(
+            "Let the GPU borrow up to 25 W more when the CPU is lightly loaded, "
+            "never above the GPU's maximum limit. Needs nvidia-powerd."
+        )
+        self.dynamic_boost_checkbox.toggled.connect(self._dynamic_boost_toggled)
+        controls.addWidget(self.dynamic_boost_checkbox)
+        column.addLayout(controls)
+
+        result = QHBoxLayout()
+        result.setSpacing(10)
+        self.gpu_power_equation_label = QLabel(
+            "Reading GPU power limit..."
+            if self._linux
+            else "GPU power control is available on Linux only for now."
+        )
+        self.gpu_power_equation_label.setObjectName("statusText")
+        result.addWidget(self.gpu_power_equation_label)
+        self.gpu_power_limit_badge = QLabel("-- W")
+        self.gpu_power_limit_badge.setObjectName("limitBadgePending")
+        self.gpu_power_limit_badge.setToolTip("Power limit the NVIDIA driver enforces now")
+        self.gpu_power_limit_badge.setAccessibleName("NVIDIA power limit")
+        result.addWidget(self.gpu_power_limit_badge)
+        self.gpu_power_max_label = QLabel()
+        self.gpu_power_max_label.setObjectName("statusText")
+        result.addWidget(self.gpu_power_max_label)
+        result.addStretch()
+        column.addLayout(result)
+        self.gpu_power_panel.setEnabled(False)
+        parent_layout.addWidget(self.gpu_power_panel)
 
     def _fan_row(
         self, parent_layout: QVBoxLayout, title: str
@@ -651,8 +804,12 @@ class FanControlWindow(QMainWindow):
         show_action = QAction("Show Fan Control", self)
         show_action.triggered.connect(self.activate_from_second_instance)
         tray_menu.addAction(show_action)
+        about_action = QAction("About", self)
+        about_action.setToolTip("Open the project website on GitHub")
+        about_action.triggered.connect(self.open_project_website)
+        tray_menu.addAction(about_action)
         tray_menu.addSeparator()
-        self.tray_exit_action = QAction("Exit", self)
+        self.tray_exit_action = QAction("Quit" if self._linux else "Exit", self)
         self.tray_exit_action.triggered.connect(self.request_exit)
         tray_menu.addAction(self.tray_exit_action)
         self.tray_icon.setContextMenu(tray_menu)
@@ -663,6 +820,10 @@ class FanControlWindow(QMainWindow):
     def _settings_path() -> Path:
         if getattr(sys, "frozen", False):
             return Path(sys.executable).resolve().with_suffix(".json")
+        if is_linux():
+            # The Linux install directory is root-owned; keep GUI preferences per user.
+            config_home = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+            return Path(config_home) / LINUX_CONFIG_DIRECTORY / SETTINGS_FILENAME
         return Path(__file__).resolve().parents[1] / SETTINGS_FILENAME
 
     @classmethod
@@ -740,6 +901,7 @@ class FanControlWindow(QMainWindow):
         path = self._settings_path()
         temporary = path.with_suffix(path.suffix + ".tmp")
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
             temporary.write_text(
                 json.dumps(settings, indent=2) + "\n", encoding="utf-8"
             )
@@ -757,6 +919,10 @@ class FanControlWindow(QMainWindow):
             self.show()
         elif not QSystemTrayIcon.isSystemTrayAvailable():
             self.showMinimized()
+
+    def open_project_website(self) -> None:
+        if not QDesktopServices.openUrl(QUrl(PROJECT_URL)):
+            self._set_status(f"Could not open a browser | {PROJECT_URL}")
 
     def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (
@@ -806,10 +972,11 @@ class FanControlWindow(QMainWindow):
         self._busy = busy
         self.boost_button.setEnabled(not busy)
         self.oem_service_button.setEnabled(not busy)
-        self.exit_button.setEnabled(not busy)
-        self.tray_exit_action.setEnabled(not busy)
+        self.exit_button.setEnabled(not busy or self._linux)
+        self.tray_exit_action.setEnabled(not busy or self._linux)
         self.mode_toggle.setEnabled(not busy)
         self._update_mode_panels()
+        self._update_gpu_power_enabled()
         if message:
             self._set_status(message)
 
@@ -917,6 +1084,8 @@ class FanControlWindow(QMainWindow):
         on_complete: Callable[[Any], None],
         busy_message: str,
         on_failed: Callable[[str], None] | None = None,
+        *,
+        show_error: bool = True,
     ) -> None:
         if self._busy or self._closing:
             return
@@ -929,7 +1098,12 @@ class FanControlWindow(QMainWindow):
             if self._closing:
                 return
             self._set_busy(False)
-            on_complete(result)
+            try:
+                on_complete(result)
+            except Exception:
+                # A malformed reply must not take the GUI down.
+                self._set_status("Unexpected backend reply | See the error details")
+                QMessageBox.warning(self, "Fan control", traceback.format_exc())
 
         def failed(details: str) -> None:
             self._workers.discard(worker)
@@ -938,7 +1112,8 @@ class FanControlWindow(QMainWindow):
             self._set_busy(False, "Fan-control backend communication failed")
             if on_failed is not None:
                 on_failed(details)
-            QMessageBox.critical(self, "Fan control error", details)
+            if show_error:
+                QMessageBox.critical(self, "Fan control error", details)
 
         worker.signals.completed.connect(complete)
         worker.signals.failed.connect(failed)
@@ -952,6 +1127,12 @@ class FanControlWindow(QMainWindow):
         )
 
     def _load_initial_state(self) -> None:
+        if self._linux:
+            # The always-running service owns the mode; a GUI login must not
+            # reset it. The service itself starts in Automatic after every boot.
+            self._load_state_quietly()
+            return
+
         def complete(result: dict[str, Any]) -> None:
             self._show_state(result)
             self._apply_preferences_to_controls()
@@ -963,7 +1144,27 @@ class FanControlWindow(QMainWindow):
             "Reading fan state...",
         )
 
+    def _load_state_quietly(self) -> None:
+        self._last_state_attempt = time.monotonic()
+        self._run(
+            lambda: self._backend.request("load_state"),
+            self._show_state,
+            "Reading fan state...",
+            on_failed=self._show_service_problem,
+            show_error=False,
+        )
+
+    def _show_service_problem(self, details: str) -> None:
+        lines = details.strip().splitlines()
+        message = lines[-1] if lines else "unknown error"
+        if "BackendUnavailable" in message:
+            self._backend_offline = True
+            self._set_status(f"Fan-control service unavailable | {SERVICE_START_HINT}")
+            return
+        self._set_status(f"Fan-control service error | {message.split(': ', 1)[-1]}")
+
     def _show_state(self, result: dict[str, Any]) -> None:
+        self._state_loaded = True
         status = result["status"]
         curve = result["curve"]
         backend = result["backend"]
@@ -1009,7 +1210,9 @@ class FanControlWindow(QMainWindow):
         def complete(result: dict[str, Any]) -> None:
             self._workers.discard(worker)
             self._telemetry_inflight = False
-            if not self._closing:
+            if self._closing:
+                return
+            try:
                 self._show_telemetry(result["telemetry"])
                 self._show_backend_state(result["backend"])
                 temperatures = result["temperatures"]
@@ -1017,6 +1220,10 @@ class FanControlWindow(QMainWindow):
                     self._show_temperatures(temperatures)
                 elif result["temperature_error"]:
                     self._show_temperature_error(result["temperature_error"])
+                if "gpu_power" in result:
+                    self._show_gpu_power(result["gpu_power"])
+            except (KeyError, TypeError, ValueError) as exc:
+                self._set_status(f"Connected | Unexpected telemetry: {exc}")
 
         def failed(details: str) -> None:
             self._workers.discard(worker)
@@ -1029,9 +1236,9 @@ class FanControlWindow(QMainWindow):
         self._pool.start(worker)
 
     def _show_telemetry(self, telemetry: dict[str, Any]) -> None:
-        for gauge, key in (
-            (self.cpu_fan_gauge, "CpuFanDuty"),
-            (self.gpu_fan_gauge, "GpuFanDuty"),
+        for gauge, key, rpm_key in (
+            (self.cpu_fan_gauge, "CpuFanDuty", "CpuFanRpm"),
+            (self.gpu_fan_gauge, "GpuFanDuty", "GpuFanRpm"),
         ):
             try:
                 duty = float(telemetry[key])
@@ -1039,7 +1246,15 @@ class FanControlWindow(QMainWindow):
                 duty = None
             if duty is not None and not 0 <= duty <= 100:
                 duty = None
-            gauge.set_value(duty)
+            rpm = telemetry.get(rpm_key)
+            detail = f"{int(rpm)} RPM" if isinstance(rpm, (int, float)) else ""
+            gauge.set_value(duty, detail=detail)
+        self._set_fault(
+            "fan",
+            "The EC reports a fan fault. Check both fans."
+            if telemetry.get("FanAbnormal")
+            else None,
+        )
         if self._table_name and self.mode_toggle.is_manual():
             method = {
                 "oem_mqtt": "OEM MQTT",
@@ -1052,15 +1267,35 @@ class FanControlWindow(QMainWindow):
 
     def _show_temperatures(self, temperatures: dict[str, Any]) -> None:
         self.cpu_temp_gauge.set_value(float(temperatures["cpu_c"]))
-        self.gpu_temp_gauge.set_value(float(temperatures["gpu_c"]))
-        self.source_label.setText(
-            f"CPU: {temperatures['cpu_source']} | GPU: {temperatures['gpu_source']}"
-        )
+        gpu_c = temperatures.get("gpu_c")
+        if gpu_c is None and temperatures.get("gpu_powered_off"):
+            self.gpu_temp_gauge.set_value(None, placeholder="Off")
+        else:
+            self.gpu_temp_gauge.set_value(None if gpu_c is None else float(gpu_c))
+        self.cpu_temp_gauge.setToolTip(f"Source: {temperatures['cpu_source']}")
+        self.gpu_temp_gauge.setToolTip(f"Source: {temperatures['gpu_source']}")
+        self._update_power_draw(temperatures)
+        self._set_fault("sensor", None)
 
     def _show_temperature_error(self, error: str) -> None:
-        self.cpu_temp_gauge.set_value(None)
-        self.gpu_temp_gauge.set_value(None)
-        self.source_label.setText(f"Sensor error: {error}")
+        for gauge in (
+            self.cpu_temp_gauge,
+            self.gpu_temp_gauge,
+            self.cpu_power_gauge,
+            self.gpu_power_gauge,
+        ):
+            gauge.set_value(None)
+        self._set_fault("sensor", f"Sensor error: {error}")
+
+    def _set_fault(self, kind: str, message: str | None) -> None:
+        # One warning line; the most important message wins.
+        self._faults[kind] = message
+        for name in ("emergency", "sensor", "fan"):
+            if self._faults.get(name):
+                self.fault_label.setText(self._faults[name])
+                self.fault_label.show()
+                return
+        self.fault_label.hide()
 
     def _show_backend_state(self, backend: dict[str, Any]) -> None:
         self._control_method = backend.get("control_method")
@@ -1072,10 +1307,24 @@ class FanControlWindow(QMainWindow):
             self.control_method_label.setText("Direct EC")
         else:
             self.control_method_label.setText("Detecting control...")
+        capabilities = backend.get("capabilities") or {}
+        if not capabilities.get("gpu_power_limit"):
+            self._gpu_power_available = False
+            self._update_gpu_power_enabled()
         target = backend.get("auto_target")
         self.auto_target_label.setText(
             "Shared target: --%" if target is None else f"Shared target: {target}%"
         )
+        if backend.get("sensor_emergency"):
+            reason = backend.get("sensor_error") or "no valid reading"
+            self._set_fault(
+                "emergency",
+                f"Sensor failure for over 30 s ({reason}). Both fans are forced to "
+                "100% until the sensors recover.",
+            )
+            self._set_status("Sensor failure | Fans forced to 100%")
+            return
+        self._set_fault("emergency", None)
         if not backend.get("automatic"):
             return
         error = backend.get("auto_error")
@@ -1170,6 +1419,230 @@ class FanControlWindow(QMainWindow):
             "Enabling Fan Boost..." if enabled else "Disabling Fan Boost...",
         )
 
+    def _update_gpu_power_enabled(self) -> None:
+        self.gpu_power_panel.setEnabled(self._gpu_power_available and not self._busy)
+
+    def _gpu_power_label_text(self, offset: int) -> str:
+        if self._gpu_power_base is None:
+            return f"+{offset} W"
+        return f"{self._gpu_power_base + offset:.0f} W"
+
+    def _gpu_power_value_changed(self, value: int) -> None:
+        del value
+        self._update_gpu_power_text()
+
+    def _schedule_gpu_power_apply(self) -> None:
+        if not self._gpu_power_available or self._busy:
+            return
+        step = GPU_POWER_STEP_WATTS
+        rounded = min(
+            self.gpu_power_slider.maximum(),
+            (self.gpu_power_slider.value() + step // 2) // step * step,
+        )
+        if rounded != self.gpu_power_slider.value():
+            self.gpu_power_slider.setValue(rounded)
+        self._gpu_power_apply_timer.start()
+
+    def apply_gpu_power(self) -> None:
+        if not self._gpu_power_available or self._busy:
+            return
+        offset = self.gpu_power_slider.value()
+        if offset == self._gpu_power_applied:
+            return
+
+        def complete(state: dict[str, Any]) -> None:
+            self._mark_gpu_power_changed()
+            self._show_gpu_power(state)
+            self._set_status(
+                f"GPU power limit set to {self._gpu_power_label_text(offset)}"
+            )
+
+        def failed(_details: str) -> None:
+            if self._gpu_power_applied is not None:
+                self.gpu_power_slider.blockSignals(True)
+                self.gpu_power_slider.setValue(self._gpu_power_applied)
+                self.gpu_power_slider.blockSignals(False)
+                self._gpu_power_value_changed(self._gpu_power_applied)
+
+        self._run(
+            lambda: self._backend.request("set_gpu_power", offset=offset),
+            complete,
+            "Setting GPU power limit...",
+            on_failed=failed,
+        )
+
+    @staticmethod
+    def _set_label_warning(label: QLabel, warning: bool) -> None:
+        normal = label.property("normalObjectName")
+        if normal is None:
+            normal = label.objectName() if label.objectName() != "warningText" else "statusText"
+            label.setProperty("normalObjectName", normal)
+        name = "warningText" if warning else normal
+        if label.objectName() != name:
+            label.setObjectName(name)
+            label.style().unpolish(label)
+            label.style().polish(label)
+
+    def _dynamic_boost_toggled(self, enabled: bool) -> None:
+        if not self._gpu_power_available or self._busy:
+            return
+
+        def complete(state: dict[str, Any]) -> None:
+            self._mark_gpu_power_changed()
+            self._show_gpu_power(state)
+            self._set_status("Dynamic Boost enabled" if enabled else "Dynamic Boost disabled")
+
+        def failed(_details: str) -> None:
+            self.dynamic_boost_checkbox.blockSignals(True)
+            self.dynamic_boost_checkbox.setChecked(not enabled)
+            self.dynamic_boost_checkbox.blockSignals(False)
+
+        self._run(
+            lambda: self._backend.request("set_dynamic_boost", enabled=enabled),
+            complete,
+            "Enabling Dynamic Boost..." if enabled else "Disabling Dynamic Boost...",
+            on_failed=failed,
+        )
+
+    def _mark_gpu_power_changed(self) -> None:
+        # Until NVIDIA reports a limit read after this moment, the badge shows "?".
+        self._gpu_power_changed_at = time.monotonic()
+        for delay in GPU_LIMIT_REFRESH_DELAYS_MS:
+            QTimer.singleShot(delay, self.refresh_telemetry)
+
+    def _gpu_limit_is_fresh(self) -> bool:
+        changed_at = self._gpu_power_changed_at
+        if changed_at is None:
+            return True
+        age = self._gpu_power_state.get("limits_age_s")
+        read_at = None if not isinstance(age, (int, float)) else self._gpu_power_state_at - age
+        if (read_at is not None and read_at >= changed_at + GPU_LIMIT_SETTLE_SECONDS) or (
+            time.monotonic() - changed_at >= GPU_LIMIT_WAIT_SECONDS
+        ):
+            self._gpu_power_changed_at = None
+            return True
+        return False
+
+    def _show_gpu_power(self, state: dict[str, Any]) -> None:
+        self._gpu_power_state = dict(state)
+        self._gpu_power_state_at = time.monotonic()
+        self._gpu_power_available = bool(state.get("available"))
+        base = state.get("base_limit_w")
+        if isinstance(base, (int, float)):
+            self._gpu_power_base = float(base)
+        max_offset = state.get("max_offset")
+        if isinstance(max_offset, int) and max_offset >= 0:
+            self.gpu_power_slider.setMaximum(max_offset)
+        maximum = state.get("max_limit_w")
+        if isinstance(maximum, (int, float)):
+            self.gpu_power_gauge.set_maximum(float(maximum))
+        offset = state.get("offset")
+        if isinstance(offset, int):
+            self._gpu_power_applied = offset
+            if (
+                not self.gpu_power_slider.isSliderDown()
+                and not self._gpu_power_apply_timer.isActive()
+            ):
+                self.gpu_power_slider.blockSignals(True)
+                self.gpu_power_slider.setValue(offset)
+                self.gpu_power_slider.blockSignals(False)
+        boost = state.get("dynamic_boost")
+        if isinstance(boost, bool):
+            self.dynamic_boost_checkbox.blockSignals(True)
+            self.dynamic_boost_checkbox.setChecked(boost)
+            self.dynamic_boost_checkbox.blockSignals(False)
+        self._update_gpu_power_text()
+        self._update_gpu_power_enabled()
+
+    def _set_limit_badge(self, text: str, kind: str, tooltip: str) -> None:
+        name = {"ok": "limitBadge", "warning": "limitBadgeWarning"}.get(kind, "limitBadgePending")
+        self.gpu_power_limit_badge.setText(text)
+        self.gpu_power_limit_badge.setToolTip(tooltip)
+        if self.gpu_power_limit_badge.objectName() != name:
+            self.gpu_power_limit_badge.setObjectName(name)
+            self.gpu_power_limit_badge.style().unpolish(self.gpu_power_limit_badge)
+            self.gpu_power_limit_badge.style().polish(self.gpu_power_limit_badge)
+
+    def _update_gpu_power_text(self) -> None:
+        """Show sustained + boost = NVIDIA limit / maximum, like TUXEDO's TGP chart."""
+        state = self._gpu_power_state
+        if not state:
+            return
+        offset = self.gpu_power_slider.value()
+        base = self._gpu_power_base
+        maximum = state.get("max_limit_w")
+        enforced = state.get("enforced_limit_w")
+        self.gpu_power_max_label.setText(
+            f"/ {maximum:.0f} W max" if isinstance(maximum, (int, float)) else ""
+        )
+        warning = False
+        if not state.get("available"):
+            equation = f"Unavailable: {state.get('error') or 'unknown error'}"
+            self._set_limit_badge("-- W", "warning", "The GPU power limit cannot be read")
+            warning = True
+        elif base is None:
+            equation = f"Base + {offset} W sustained (base shown once the GPU wakes) ="
+            self._set_limit_badge("-- W", "pending", "NVIDIA reports limits while the GPU is awake")
+        else:
+            sustained = base + offset
+            boost_w = state.get("dynamic_boost_w")
+            room = float(boost_w) if state.get("dynamic_boost") is True and isinstance(boost_w, int) else 0.0
+            if isinstance(maximum, (int, float)):
+                room = max(0.0, min(room, maximum - sustained))
+            applied = (
+                offset == state.get("offset")
+                and not self._gpu_power_apply_timer.isActive()
+                and not self.gpu_power_slider.isSliderDown()
+            )
+            if not state.get("powerd_running", True):
+                equation = "Not applied: nvidia-powerd is not running. NVIDIA enforces"
+                self._set_limit_badge(
+                    f"{enforced:.0f} W" if isinstance(enforced, (int, float)) else "-- W",
+                    "warning",
+                    "NVIDIA applies cTGP and Dynamic Boost only while nvidia-powerd runs",
+                )
+                warning = True
+            elif applied and isinstance(enforced, (int, float)) and not self._gpu_limit_is_fresh():
+                equation = f"{sustained:.0f} W sustained + {room:.0f} W boost ="
+                self._set_limit_badge(
+                    "? W", "pending", "Waiting for NVIDIA to report the new limit"
+                )
+            elif applied and isinstance(enforced, (int, float)):
+                if enforced + 1 < sustained:
+                    equation = f"{sustained:.0f} W requested, but NVIDIA enforces"
+                    self._set_limit_badge(
+                        f"{enforced:.0f} W", "warning", "NVIDIA enforces less than requested"
+                    )
+                    warning = True
+                else:
+                    # The boost term is what NVIDIA actually adds right now.
+                    equation = (
+                        f"{sustained:.0f} W sustained + {enforced - sustained:.0f} W boost ="
+                    )
+                    self._set_limit_badge(
+                        f"{enforced:.0f} W", "ok", "Power limit the NVIDIA driver enforces now"
+                    )
+            else:
+                equation = f"{sustained:.0f} W sustained + {room:.0f} W boost ="
+                self._set_limit_badge(
+                    f"~{sustained + room:.0f} W",
+                    "pending",
+                    "Expected limit; NVIDIA reports it while the GPU is awake"
+                    if applied
+                    else "Expected limit once the change is applied",
+                )
+        self.gpu_power_equation_label.setText(equation)
+        self._set_label_warning(self.gpu_power_equation_label, warning)
+
+    def _update_power_draw(self, temperatures: dict[str, Any]) -> None:
+        cpu = temperatures.get("cpu_power_w")
+        gpu = temperatures.get("gpu_power_w")
+        self.cpu_power_gauge.set_value(float(cpu) if isinstance(cpu, (int, float)) else None)
+        if temperatures.get("gpu_powered_off"):
+            self.gpu_power_gauge.set_value(None, placeholder="Off")
+        else:
+            self.gpu_power_gauge.set_value(float(gpu) if isinstance(gpu, (int, float)) else None)
+
     def toggle_oem_service(self) -> None:
         start_service = self._control_method != "oem_mqtt"
         action = "start" if start_service else "stop"
@@ -1228,7 +1701,15 @@ class FanControlWindow(QMainWindow):
             recovered = self._backend_offline
             self._backend_offline = False
             self._show_backend_state(result)
-            if recovered:
+            if self._linux:
+                # The service is authoritative on Linux: adopt its state after an
+                # outage, and keep retrying quietly if the first load failed.
+                if recovered or (
+                    not self._state_loaded
+                    and time.monotonic() - self._last_state_attempt >= 30.0
+                ):
+                    self._load_state_quietly()
+            elif recovered:
                 self._sync_backend_mode()
 
         def failed(details: str) -> None:
@@ -1238,6 +1719,9 @@ class FanControlWindow(QMainWindow):
             if self._closing:
                 return
             self._backend_offline = True
+            if self._linux:
+                self._set_status(f"Fan-control service unavailable | {SERVICE_START_HINT}")
+                return
             self._set_status("Backend unavailable | Waiting to restart")
             now = time.monotonic()
             if now - self._last_backend_restart >= RESTART_COOLDOWN_SECONDS:
@@ -1268,6 +1752,23 @@ class FanControlWindow(QMainWindow):
         )
 
     def request_exit(self) -> None:
+        if self._linux:
+            # Closing the Linux GUI never changes fan control; the service keeps running.
+            answer = QMessageBox.question(
+                self,
+                "Confirm quit",
+                "Close the Fan Control window and tray icon?\n\n"
+                "The fan-control service keeps controlling both fans in the background.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self._manual_apply_timer.stop()
+            self._gpu_power_apply_timer.stop()
+            self._exit_prepared = True
+            self.close()
+            return
         if self._exit_in_progress:
             return
         if self._busy:
@@ -1346,7 +1847,9 @@ class FanControlWindow(QMainWindow):
             self.hide()
             self.tray_icon.showMessage(
                 "Fan Control is still running",
-                "Use the Exit button or the tray menu to stop fan control.",
+                "The fan-control service keeps running. Use Quit to close the tray icon."
+                if self._linux
+                else "Use the Exit button or the tray menu to stop fan control.",
                 QSystemTrayIcon.MessageIcon.Information,
                 3000,
             )
@@ -1356,6 +1859,7 @@ class FanControlWindow(QMainWindow):
         self._telemetry_timer.stop()
         self._status_timer.stop()
         self._backend_watchdog_timer.stop()
+        self._gpu_power_apply_timer.stop()
         try:
             self._backend.request("frontend_detach", request_timeout=0.5)
         except Exception:
@@ -1404,17 +1908,23 @@ def create_instance_server(window: FanControlWindow) -> QLocalServer:
 
 
 def main(backend: Any | None = None) -> None:
-    if backend is None and not ensure_backend(start_frontend=False):
+    linux = is_linux()
+    if backend is None and not ensure_backend(start_frontend=False) and not linux:
         raise RuntimeError("Could not start the fan-control backend")
+    # On Linux the GUI also starts while the service is down; it shows the
+    # outage and reconnects when systemd brings the service back.
     app = QApplication(sys.argv)
     app.setApplicationName("Fan Control")
+    app.setDesktopFileName("stellaris-fan-control")
     app.setQuitOnLastWindowClosed(False)
     if notify_existing_instance():
         return
     window = FanControlWindow(backend=backend)
-    app.commitDataRequest.connect(
-        window.prepare_session_shutdown, Qt.ConnectionType.DirectConnection
-    )
+    if not linux:
+        # Windows session end writes 100%; on Linux the service handles shutdown.
+        app.commitDataRequest.connect(
+            window.prepare_session_shutdown, Qt.ConnectionType.DirectConnection
+        )
     window._instance_server = create_instance_server(window)
     window.show_on_startup()
     raise SystemExit(app.exec())

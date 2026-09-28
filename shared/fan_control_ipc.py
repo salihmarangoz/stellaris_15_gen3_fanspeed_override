@@ -20,10 +20,21 @@ COMPONENT_ENTRY_POINTS = {
     "frontend": "stellaris15gen3_frontend.py",
     "backend": "stellaris15gen3_backend.py",
 }
+LINUX_SERVICE_NAME = "stellaris-fan-control"
+DEFAULT_LINUX_SOCKET_PATH = Path("/run/stellaris-fan-control/backend.sock")
 
 
 class BackendUnavailable(RuntimeError):
     pass
+
+
+def is_linux() -> bool:
+    return os.name != "nt" and sys.platform.startswith("linux")
+
+
+def linux_socket_path() -> Path:
+    override = os.environ.get("STELLARIS15GEN3_SOCKET")
+    return Path(override) if override else DEFAULT_LINUX_SOCKET_PATH
 
 
 def runtime_directory() -> Path:
@@ -118,6 +129,13 @@ def _launch_unelevated(command: list[str]) -> None:
 def launch_component(
     role: str, *extra_arguments: str
 ) -> subprocess.Popen[bytes] | None:
+    if is_linux() and role == "backend":
+        raise BackendUnavailable(
+            f"The {LINUX_SERVICE_NAME} service is not running; start it with "
+            f"'sudo systemctl start {LINUX_SERVICE_NAME}'"
+        )
+    if is_linux() and role == "frontend" and is_administrator():
+        raise PermissionError("The fan-control GUI must run as a normal user, not root")
     command = component_command(role, *extra_arguments)
     if os.name == "nt" and role == "backend" and not is_administrator():
         _launch_elevated(command)
@@ -138,8 +156,29 @@ def launch_component(
 
 
 class BackendClient:
-    def __init__(self, timeout: float = 15.0) -> None:
+    def __init__(self, timeout: float = 15.0, transport: str | None = None) -> None:
         self.timeout = timeout
+        self.transport = transport or ("unix" if is_linux() else "tcp")
+
+    def _connect(self, timeout: float) -> tuple[socket.socket, str]:
+        if self.transport == "unix":
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            connection.settimeout(timeout)
+            try:
+                connection.connect(str(linux_socket_path()))
+            except OSError:
+                connection.close()
+                raise
+            # The service authenticates by kernel peer credentials, not a token.
+            return connection, ""
+        try:
+            endpoint = json.loads(endpoint_path().read_text(encoding="utf-8"))
+            host = str(endpoint["host"])
+            port = int(endpoint["port"])
+            token = str(endpoint["token"])
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise BackendUnavailable("Fan-control backend is not available") from exc
+        return socket.create_connection((host, port), timeout=timeout), token
 
     def request(
         self,
@@ -150,11 +189,10 @@ class BackendClient:
     ) -> Any:
         timeout = self.timeout if request_timeout is None else request_timeout
         try:
-            endpoint = json.loads(endpoint_path().read_text(encoding="utf-8"))
-            host = str(endpoint["host"])
-            port = int(endpoint["port"])
-            token = str(endpoint["token"])
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+            connection, token = self._connect(timeout)
+        except BackendUnavailable:
+            raise
+        except (OSError, TimeoutError) as exc:
             raise BackendUnavailable("Fan-control backend is not available") from exc
 
         payload = json.dumps(
@@ -162,7 +200,7 @@ class BackendClient:
             separators=(",", ":"),
         ).encode("utf-8") + b"\n"
         try:
-            with socket.create_connection((host, port), timeout=timeout) as connection:
+            with connection:
                 connection.settimeout(timeout)
                 connection.sendall(payload)
                 received = bytearray()
@@ -206,6 +244,9 @@ def ensure_backend(*, start_frontend: bool) -> bool:
             return True
     except Exception:
         pass
+    if is_linux():
+        # The root systemd service is started by the system, never by the GUI.
+        return False
     arguments = () if start_frontend else ("--no-frontend",)
     launch_component("backend", *arguments)
     return wait_for_backend()

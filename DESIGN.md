@@ -2,7 +2,7 @@
 
 This is the living design record for Stellaris 15 Gen3 fan control. It explains why the project is shaped this way and records decisions that should survive individual code changes. Safety requirements in `AGENTS.md` take precedence if this document ever falls behind the code.
 
-Last reviewed: 2026-09-02
+Last reviewed: 2026-09-29
 
 ## Goals
 
@@ -11,12 +11,14 @@ Last reviewed: 2026-09-02
 - Keep hardware access and fan writes behind a small, elevated backend.
 - Make every automatic decision predictable, conservative, and testable without live hardware writes.
 - Preserve an immediate OEM Fan Boost fallback and recoverable curve backups.
+- Run the same safety logic on Windows 11 and Ubuntu 24.04, with platform adapters only where hardware access, privilege, startup, and packaging differ.
 
 ## Non-goals
 
 - Supporting laptops or OEM Control Center versions that have not been validated on the target hardware.
 - Replacing or patching OEM program files.
-- Reading CPU temperature from the OEM service, EC, MQTT, Core Temp, ACPI thermal zones, or WinRing0.
+- Reading CPU temperature from the OEM service, EC, MQTT, Core Temp, ACPI thermal zones, WinRing0, or TUXEDO Control Center.
+- Depending on TUXEDO Control Center or out-of-tree kernel modules on Linux.
 - Providing remote control. IPC is loopback-only.
 
 ## Process design
@@ -50,6 +52,44 @@ An automatic cycle reads both independent sensors, rejects unavailable, zero, ma
 The default curve is 30% at 35 C and 100% at 75 C. The endpoints can be adjusted from 0 to 100 C, but the hard 80 C safety cap still forces 100%. Targets are rounded to 5% steps and can never fall below 30% in Automatic mode.
 
 Entering Automatic mode creates one backup before the first write. Later 15-second cycles reuse that protection instead of producing a backup every time. Changing to Manual stops future automatic cycles. Fan Boost pauses automatic writes while it is enabled.
+
+## Sensor-loss emergency
+
+The backend records the time of every successful, validated sensor read. A watchdog thread reads the sensors whenever no read was attempted in the last 5 seconds, in every mode. When no read has succeeded for 30 seconds, it enables EC Fan Boost, which reached 100% within about two seconds in the live test, whereas a 100% table ramps at about 1.7% per second. While the emergency lasts, Manual writes and turning Boost off are refused, and the EC Boost state is not mistaken for a user Boost. When readings return, Automatic mode resumes with the next validated target, which leaves Boost, or Manual mode restores the last written duties.
+
+"Stale" means that no valid reading succeeded: errors, timeouts, zero, malformed, or implausible values, or a missing GPU. An unchanged value is not treated as stale, because the NVIDIA driver reports whole degrees that legitimately stay constant at idle, and both sources read live hardware registers rather than the frozen EC copy. A runtime-suspended Linux GPU is powered off and counts as a valid cold reading.
+
+The sensor status has its own lock, which is never held while the state lock is acquired, so the watchdog cannot deadlock with the service-change path that reads sensors while holding the state lock.
+
+## Linux design
+
+```text
+normal-user tray GUI (PySide6)
+        |
+        | JSON over /run/stellaris-fan-control/backend.sock (peer-credential check)
+        v
+root systemd service ----> k10temp Tctl, nvidia-smi, RAPL package energy
+        |
+        v
+LinuxFanService -> LinuxEcClient -> /dev/mem window 0xFE200000 (INOU EC RAM)
+                \-> uniwill-laptop or tuxedo-drivers ctgp_offset sysfs (cTGP)
+```
+
+The BIOS N.1.61A15 DSDT defines `\_SB.INOU.ECRR`/`ECRW` as single-byte accesses to `0xFE200000 + address` under an AML mutex, with no mailbox protocol. A root process can therefore perform the same accesses through an `O_SYNC` `/dev/mem` mapping; the Ubuntu kernel enables `STRICT_DEVMEM` but not `IO_STRICT_DEVMEM`, and the window is not RAM. Accesses are paced at 6 ms like the OEM software and the mainline driver. Because each access is one byte, concurrent AML users cannot corrupt a transaction; the only shared state is the bit-level enable registers, which neither the firmware nor the mainline driver writes except `0x0741` bit 0, which both sides set. The DSDT SHA-256 is pinned like the Windows OEM DLL hash, so a BIOS update disables direct control until it is revalidated.
+
+The register meanings match the mainline `uniwill-laptop` register map and TUXEDO's driver: `0x0741` bit 0 enables manual control, `0x0751` is the fan mode (`0x80` user, `0x20` high, `0x40` Boost), `0x07C5` bit 7 splits the CPU and GPU tables, `0x07C6` bit 2 enables the `0x0F00`-`0x0F5F` tables (end temperature, start temperature, duty per zone), `0x075B`/`0x075C` are the live duties, and `0x0464`/`0x046C` hold big-endian fan RPM. `0x07C5` bit 5 (`WHMS`) is forwarded to the NVIDIA driver as WhisperMode by the firmware, so Linux leaves it untouched. The Windows direct path still writes whole OEM-traced bytes there.
+
+Linux writes the TUXEDO zone thresholds (0-115 C, then single-degree zones up to 131 C) with the same duty in all 16 zones, so the stale EC temperature selects a zone but cannot change the duty. A duty of 0% is written as raw 1, because raw 0 makes the EC run the fan at 30% for three minutes first. The live test on 2026-09-29 confirmed that the EC follows these tables with `0x0751` set to `0x00` or `0xA0`, and that `0x40` forces 100% immediately. Tables are written before the enable bits, only changed bytes are written, every write is read back, and a mismatch restores the previous bytes.
+
+The service starts in Automatic mode on every start, persists only the Automatic endpoints and the GPU power offset in `/var/lib/stellaris-fan-control/settings.json`, and re-asserts the last requested fan state and cTGP offset every 15 seconds and on `SIGUSR1` from the resume hook. `SIGTERM` stops the IPC server and writes 100% to both fans before exiting. systemd restarts the service after any failure without a start limit. Writes are refused while `tccd` runs so that two controllers never fight.
+
+When the NVIDIA GPU's PCI runtime status is `suspended`, it is powered off; querying it would wake it, so Automatic mode uses the CPU temperature alone. Otherwise the GPU reading remains mandatory and fails closed.
+
+The GPU power limit uses the cTGP offset register `0x0744` (watts above the 115 W base, capped at 50 W and at the VBIOS maximum reported by `nvidia-smi`). The service writes the kernel driver's `ctgp_offset` attribute when `uniwill-laptop` or `tuxedo-drivers` provides it, and otherwise programs `0x0743`-`0x0746` itself the way those drivers do. Dynamic Boost is `0x0743` bit 1 with its 25 W amount in `0x0746`; neither kernel driver exposes a switch, so the service toggles the bit directly with TUXEDO's `db_enable` semantics (clearing the general-enable bit only when cTGP is off as well) and re-asserts the saved choice every 15 seconds, which also undoes the mainline driver's resume-time re-enable.
+
+The NVIDIA driver applies these firmware limits only while `nvidia-powerd` runs; without it the enforced limit stays at the 115 W default. Measured on 2026-09-29 with `nvidia-powerd` running, `enforced.power.limit` was `min(115 + offset + 25, 165)` W and followed offset changes within 1.5 seconds without restarting the daemon. TUXEDO Control Center displays the same model (cTGP plus a "Dynamic Boost range" of `min(max - default - offset, 25)`) and relies on TUXEDO's driver packages to install and enable `nvidia-powerd` with its D-Bus policy. Ubuntu's own driver packages ship the unit only as documentation, so the installer does the same setup when the daemon is not running.
+
+The GUI is the Windows GUI with platform switches: it adopts the service's mode instead of forcing Automatic, stores its preferences under `~/.config/stellaris-fan-control`, hides the GCUBridge button, and its **Quit** closes only the GUI. It never starts or elevates the service; while the service is unavailable it shows the reason and retries quietly.
 
 ## Concurrency design
 
@@ -96,6 +136,16 @@ The always-available Start minimized checkbox persists a boolean `start_minimize
 | 2026-09-02 | Supersede separate packaged executables with one role-selecting executable. | Distribution is simpler while frontend and backend remain separate processes; only the `--backend` relaunch receives UAC elevation. |
 | 2026-09-02 | Supersede the role-selecting package with one elevated application process. | The requested distribution and runtime model is a single app that asks for UAC at startup; closing its window therefore also stops Automatic control. |
 | 2026-09-02 | Install packaged startup through a highest-privilege per-user sign-in task. | The GUI needs an interactive desktop, so a pre-login boot task would hide its window and tray icon in a non-interactive session. Installation itself does not launch Auto mode or write fan targets. |
+| 2026-09-29 | Support Ubuntu in the same repository with platform adapters. | One copy of the curve, safety rules, EC table semantics, GUI, and tests serves both systems; Windows behaviour stays as validated. |
+| 2026-09-29 | On Linux, access EC RAM through the firmware's INOU `/dev/mem` window instead of TUXEDO or an out-of-tree module. | Needs no DKMS module, matches the firmware's own access, and works after TUXEDO is removed; requires root and no kernel lockdown. |
+| 2026-09-29 | Run Linux fan control as a root systemd service with a normal-user tray GUI over a peer-credential Unix socket. | Fan control starts at boot and survives GUI exits; only the installing user may command it. |
+| 2026-09-29 | Force EC Fan Boost when no valid CPU or GPU reading succeeds for 30 seconds, on both platforms. | Supersedes the pure fail-closed behaviour during prolonged sensor loss, as decided by the owner. |
+| 2026-09-29 | Treat a runtime-suspended NVIDIA GPU as cold on Linux. | A powered-off GPU produces no heat; polling it would keep it awake. |
+| 2026-09-29 | Use bit-level writes for `0x0741`, `0x07C5`, and `0x07C6` on Linux only, and `0xA0`/`0x40` for `0x0751`. | Leaves firmware-owned bits such as WhisperMode alone; both mode values were validated live. Windows keeps its OEM-traced byte writes until re-tested. |
+| 2026-09-29 | Add a Linux-only GPU power limit (cTGP 115-165 W). | The EC exposes it through documented registers; the Windows GUI shows the control disabled. |
+| 2026-09-29 | Add a Linux Dynamic Boost checkbox and enable `nvidia-powerd` from the installer. | NVIDIA ignores cTGP and Dynamic Boost without the daemon; TUXEDO's packages enable it the same way. The GUI shows the sustained limit, the remaining boost room, and NVIDIA's enforced limit separately. |
+| 2026-09-29 | Make the Linux installer a single command that offers to disable `tccd` and starts the service. | The owner found the multi-step install too complicated; unlike the Windows installer it starts Automatic control, because the service is the product and has no separate launch step. |
+| 2026-09-29 | Distribute Linux as a source archive with `install.sh`, not a `.deb`. | Ubuntu 24.04 does not package PySide6, and a `.deb` would have to bundle Qt or download it during installation. |
 
 ## Release distribution
 

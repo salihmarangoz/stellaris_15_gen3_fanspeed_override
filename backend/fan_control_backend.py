@@ -1,5 +1,5 @@
 import json
-import msvcrt
+import os
 import secrets
 import socketserver
 import threading
@@ -12,6 +12,8 @@ from shared.fan_control_common import (
     AUTO_INTERVAL_SECONDS,
     DEFAULT_MAX_FAN_TEMP,
     DEFAULT_MIN_FAN_TEMP,
+    SENSOR_STALE_TIMEOUT_SECONDS,
+    SENSOR_WATCHDOG_INTERVAL_SECONDS,
     auto_target,
 )
 from shared.fan_control_ipc import (
@@ -23,13 +25,29 @@ from shared.fan_control_ipc import (
     launch_component,
     runtime_directory,
 )
-from backend.fan_control_service import ControlCenterService
-from backend.temperature_service import Temperatures, read_temperatures
+
+if os.name == "nt":
+    import msvcrt
+
+    from backend.fan_control_service import ControlCenterService as FanService
+    from backend.temperature_service import read_temperatures
+else:
+    msvcrt = None
+    from backend.linux_fan_service import LinuxFanService as FanService
+    from backend.linux_sensors import read_temperatures
+
+
+WINDOWS_CAPABILITIES = {
+    "platform": "windows",
+    "gpu_power_limit": False,
+    "oem_service": True,
+    "exit_stops_control": True,
+}
 
 
 class BackendController:
     def __init__(self) -> None:
-        self._service = ControlCenterService.instance()
+        self._service = FanService.instance()
         self._state_lock = threading.RLock()
         self._sensor_lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -48,9 +66,22 @@ class BackendController:
         self._frontend_expected = False
         self._last_frontend_heartbeat: float | None = None
         self._last_frontend_restart = 0.0
+        # Sensor freshness uses its own lock so it can be recorded while the
+        # sensor lock is held without ever waiting for the state lock.
+        self._sensor_status_lock = threading.Lock()
+        self._last_sensor_success = time.monotonic()
+        self._last_sensor_attempt: float | None = None
+        self._last_sensor_error: str | None = None
+        self._sensor_emergency = False
+        self._last_written_duties: tuple[int, int] | None = None
 
     def start(self, *, start_frontend: bool, monitor_frontend: bool = True) -> None:
+        with self._sensor_status_lock:
+            self._last_sensor_success = time.monotonic()
         threading.Thread(target=self._auto_loop, name="auto-control", daemon=True).start()
+        threading.Thread(
+            target=self._sensor_watchdog, name="sensor-watchdog", daemon=True
+        ).start()
         if monitor_frontend:
             threading.Thread(
                 target=self._frontend_watchdog,
@@ -83,6 +114,8 @@ class BackendController:
                 confirmed_low=bool(arguments.get("confirmed_low", False)),
             ),
             "set_boost": lambda: self.set_boost(bool(arguments["enabled"])),
+            "set_gpu_power": lambda: self.set_gpu_power(int(arguments["offset"])),
+            "set_dynamic_boost": lambda: self.set_dynamic_boost(bool(arguments["enabled"])),
             "set_oem_service": lambda: self.set_oem_service(
                 bool(arguments["enabled"]),
                 confirmed=bool(arguments.get("confirmed", False)),
@@ -119,7 +152,18 @@ class BackendController:
                 "auto_error": self._last_auto_error,
                 "auto_updated": self._last_auto_update,
                 "control_method": getattr(self._service, "method", None),
+                "capabilities": self._capabilities(),
+                "sensor_emergency": self._sensor_emergency,
+                "sensor_error": self._sensor_error(),
             }
+
+    def _sensor_error(self) -> str | None:
+        with self._sensor_status_lock:
+            return self._last_sensor_error
+
+    def _capabilities(self) -> dict[str, Any]:
+        capabilities = getattr(self._service, "capabilities", None)
+        return dict(capabilities()) if callable(capabilities) else dict(WINDOWS_CAPABILITIES)
 
     def _read_temperature_snapshot(self) -> tuple[dict[str, Any] | None, str | None]:
         try:
@@ -131,12 +175,93 @@ class BackendController:
         except Exception as exc:
             return None, str(exc)
 
-    def _read_validated_temperatures(self) -> Temperatures:
+    def _read_validated_temperatures(self) -> Any:
         with self._sensor_lock:
-            temperatures = read_temperatures()
-        if temperatures.cpu_c <= 0 or temperatures.gpu_c <= 0:
-            raise RuntimeError("A temperature source returned zero")
+            attempted = time.monotonic()
+            try:
+                temperatures = read_temperatures()
+                self._validate_temperatures(temperatures)
+            except Exception as exc:
+                self._record_sensor_result(attempted, str(exc))
+                raise
+            self._record_sensor_result(attempted, None)
         return temperatures
+
+    @staticmethod
+    def _validate_temperatures(temperatures: Any) -> None:
+        if temperatures.cpu_c <= 0:
+            raise RuntimeError("A temperature source returned zero")
+        if temperatures.gpu_c is None:
+            # Only the Linux reader reports a powered-off (runtime-suspended)
+            # GPU; it produces no heat, so Auto may use the CPU alone.
+            if not getattr(temperatures, "gpu_powered_off", False):
+                raise RuntimeError("The GPU temperature is unavailable")
+        elif temperatures.gpu_c <= 0:
+            raise RuntimeError("A temperature source returned zero")
+
+    def _record_sensor_result(self, attempted: float, error: str | None) -> None:
+        with self._sensor_status_lock:
+            self._last_sensor_attempt = attempted
+            self._last_sensor_error = error
+            if error is None:
+                self._last_sensor_success = attempted
+
+    def _sensor_watchdog(self) -> None:
+        while not self._stop_event.wait(SENSOR_WATCHDOG_INTERVAL_SECONDS):
+            try:
+                self._check_sensors()
+            except Exception:
+                # The safety thread must survive; failures are retried next tick
+                # and remain visible through the snapshot's sensor_error.
+                pass
+
+    def _check_sensors(self) -> None:
+        with self._sensor_status_lock:
+            last_attempt = self._last_sensor_attempt
+        if (
+            last_attempt is None
+            or time.monotonic() - last_attempt >= SENSOR_WATCHDOG_INTERVAL_SECONDS
+        ):
+            try:
+                self._read_validated_temperatures()
+            except Exception:
+                pass
+        self._update_sensor_emergency()
+
+    def _update_sensor_emergency(self) -> None:
+        now = time.monotonic()
+        with self._sensor_status_lock:
+            stale = now - self._last_sensor_success >= SENSOR_STALE_TIMEOUT_SECONDS
+        with self._state_lock:
+            if stale:
+                if not self._sensor_emergency and not self._boost_enabled:
+                    # EC Fan Boost reaches 100% within seconds, unlike a table ramp.
+                    self._service.set_boost(True)
+                    self._sensor_emergency = True
+                return
+            if not self._sensor_emergency:
+                return
+            if self._automatic:
+                # The next Auto cycle writes a validated target, which leaves Boost.
+                self._sensor_emergency = False
+                self._next_auto_at = now
+            else:
+                cpu, gpu = self._last_written_duties or (100, 100)
+                self._service.apply_manual(cpu, gpu, create_backup=False)
+                self._sensor_emergency = False
+        self._auto_wakeup.set()
+
+    def _refuse_during_sensor_emergency(self) -> None:
+        if self._sensor_emergency:
+            raise RuntimeError(
+                "Sensor failure: both fans are held at 100% until the sensors recover"
+            )
+
+    @staticmethod
+    def _hottest(temperatures: Any) -> float:
+        return max(
+            value for value in (temperatures.cpu_c, temperatures.gpu_c) if value is not None
+        )
 
     def apply_manual(
         self, cpu: int, gpu: int, *, confirmed_low: bool
@@ -145,12 +270,18 @@ class BackendController:
             raise ValueError("Manual fan duty must be between 0 and 100")
         if (cpu < 30 or gpu < 30) and not confirmed_low:
             raise PermissionError("Manual fan duty below 30% was not confirmed")
-        return self._service.apply_manual(cpu, gpu)
+        with self._state_lock:
+            self._refuse_during_sensor_emergency()
+            result = self._service.apply_manual(cpu, gpu)
+            self._last_written_duties = (cpu, gpu)
+        return result
 
     def load_state(self) -> dict[str, Any]:
         result = self._service.load_state()
         with self._state_lock:
-            self._boost_enabled = str(result["status"]["FanBoostEnable"]) == "1"
+            # During a sensor emergency the EC Boost is ours, not the user's.
+            if not self._sensor_emergency:
+                self._boost_enabled = str(result["status"]["FanBoostEnable"]) == "1"
         temperatures, temperature_error = self._read_temperature_snapshot()
         result.update(
             {
@@ -164,12 +295,28 @@ class BackendController:
     def read_telemetry(self) -> dict[str, Any]:
         telemetry = self._service.read_telemetry()
         temperatures, temperature_error = self._read_temperature_snapshot()
-        return {
+        result = {
             "telemetry": telemetry,
             "temperatures": temperatures,
             "temperature_error": temperature_error,
             "backend": self._snapshot(),
         }
+        gpu_power_state = getattr(self._service, "gpu_power_state", None)
+        if callable(gpu_power_state):
+            result["gpu_power"] = gpu_power_state()
+        return result
+
+    def set_dynamic_boost(self, enabled: bool) -> dict[str, Any]:
+        set_boost = getattr(self._service, "set_dynamic_boost", None)
+        if not callable(set_boost):
+            raise RuntimeError("Dynamic Boost control is not available on this platform")
+        return set_boost(enabled)
+
+    def set_gpu_power(self, offset: int) -> dict[str, Any]:
+        set_offset = getattr(self._service, "set_gpu_power_offset", None)
+        if not callable(set_offset):
+            raise RuntimeError("GPU power limit control is not available on this platform")
+        return set_offset(offset)
 
     def configure_auto(self, minimum_temp: int, maximum_temp: int) -> dict[str, Any]:
         minimum_temp = max(0, min(100, minimum_temp))
@@ -207,7 +354,15 @@ class BackendController:
             self._auto_wakeup.clear()
             if self._stop_event.is_set() or signaled:
                 continue
-            self._run_auto_cycle()
+            try:
+                self._run_auto_cycle()
+            except Exception as exc:
+                # Automatic control must outlive any unexpected failure.
+                with self._state_lock:
+                    self._last_auto_error = f"Unexpected automatic-cycle error: {exc}"
+                    self._last_auto_update = time.time()
+                    if self._automatic:
+                        self._next_auto_at = time.monotonic() + AUTO_INTERVAL_SECONDS
 
     def _run_auto_cycle(self) -> None:
         with self._state_lock:
@@ -218,7 +373,7 @@ class BackendController:
             make_backup = self._auto_backup_needed
         try:
             temperatures = self._read_validated_temperatures()
-            hottest = max(temperatures.cpu_c, temperatures.gpu_c)
+            hottest = self._hottest(temperatures)
             target = auto_target(hottest, minimum_temp, maximum_temp)
             with self._state_lock:
                 if (
@@ -231,6 +386,9 @@ class BackendController:
                 self._service.apply_manual(
                     target, target, create_backup=make_backup
                 )
+                self._last_written_duties = (target, target)
+                # A validated target replaces any sensor-emergency Boost.
+                self._sensor_emergency = False
                 self._auto_backup_needed = False
                 self._last_temperatures = asdict(temperatures)
                 self._last_auto_target = target
@@ -248,6 +406,8 @@ class BackendController:
 
     def set_boost(self, enabled: bool) -> bool:
         with self._state_lock:
+            if not enabled:
+                self._refuse_during_sensor_emergency()
             state = self._service.set_boost(enabled)
             self._boost_enabled = state
             if not state and self._automatic:
@@ -271,6 +431,7 @@ class BackendController:
             raise PermissionError("Application exit requires confirmation")
         with self._state_lock:
             result = self._service.apply_manual(100, 100)
+            self._last_written_duties = (100, 100)
             self._automatic = False
             self._boost_enabled = False
             self._next_auto_at = None
@@ -321,8 +482,7 @@ class BackendRequestHandler(socketserver.StreamRequestHandler):
             return
         try:
             request = json.loads(line)
-            if not secrets.compare_digest(str(request.get("token", "")), self.server.token):
-                raise PermissionError("Invalid backend token")
+            self.server.authorize(self.connection, request)
             result = self.server.controller.dispatch(
                 str(request["command"]), dict(request.get("arguments", {}))
             )
@@ -343,6 +503,11 @@ class BackendServer(socketserver.ThreadingTCPServer):
         super().__init__(("127.0.0.1", 0), BackendRequestHandler)
         self.controller = controller
         self.token = token
+
+    def authorize(self, connection: Any, request: dict[str, Any]) -> None:
+        del connection
+        if not secrets.compare_digest(str(request.get("token", "")), self.token):
+            raise PermissionError("Invalid backend token")
 
 
 def _acquire_process_lock() -> tuple[Any, Path]:

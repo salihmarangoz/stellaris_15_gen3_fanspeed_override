@@ -31,6 +31,7 @@ The target laptop's embedded-controller/OEM Control Center path stopped receivin
 - The original fan curve could leave the fans too slow while the CPU was heating up.
 - Continuing to use the OEM, EC, or MQTT CPU reading in Automatic mode became unsafe.
 - Overheating, instability, shutdown, hardware damage, and data loss became credible failure outcomes.
+- On 2026-09-29 a read-only Ubuntu check confirmed the same failure outside Windows: during a 12-second all-core load, `k10temp` Tctl rose from 54 C to 75 C while EC register `0x043E` and the ACPI `acpitz` zone stayed at 55 C, and the EC GPU temperature read 0. TUXEDO Control Center's Linux fan logic reads exactly these EC values, so it was driving both fans from the frozen CPU value.
 
 ### Solution
 

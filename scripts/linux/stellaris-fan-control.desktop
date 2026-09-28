@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Stellaris Fan Control
+Comment=Fan and GPU power control for the Stellaris 15 Gen3
+Exec=/opt/stellaris-fan-control/.venv/bin/python /opt/stellaris-fan-control/stellaris15gen3_frontend.py
+Icon=/opt/stellaris-fan-control/assets/stellaris-fan-control.png
+Terminal=false
+Categories=System;Settings;HardwareSettings;
+StartupNotify=false
+StartupWMClass=stellaris-fan-control
+X-GNOME-Autostart-enabled=true

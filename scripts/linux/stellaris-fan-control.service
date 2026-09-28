@@ -1,0 +1,27 @@
+[Unit]
+Description=Stellaris 15 Gen3 fan control (direct EC)
+Documentation=https://github.com/salihmarangoz/stellaris_15_gen3_fanspeed_override
+After=systemd-modules-load.service
+# Never give up restarting: fan control must come back after any failure.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/stellaris-fan-control/stellaris15gen3_linux_service.py
+# SIGTERM (stop, shutdown, reboot) writes 100% to both fans before exiting.
+TimeoutStopSec=30
+Restart=always
+RestartSec=3
+RuntimeDirectory=stellaris-fan-control
+RuntimeDirectoryMode=0755
+StateDirectory=stellaris-fan-control
+StateDirectoryMode=0700
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Hardening that keeps /dev/mem, sysfs writes and nvidia-smi working.
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=full
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

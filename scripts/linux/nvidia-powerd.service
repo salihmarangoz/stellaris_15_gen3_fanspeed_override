@@ -1,0 +1,13 @@
+[Unit]
+Description=nvidia-powerd service
+StartLimitIntervalSec=infinity
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/nvidia-powerd
+Restart=on-abort
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,4 @@
-name: Windows release
+name: Release
 
 on:
   push:
@@ -53,9 +53,41 @@ jobs:
             dist/StellarisFanControl-windows-x64.zip.sha256
           if-no-files-found: error
 
+  build-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install Qt runtime libraries for offscreen tests
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+      - name: Create test environment
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install -r requirements.txt
+      - name: Compile source
+        run: ./.venv/bin/python -m compileall -q backend frontend shared scripts/linux stellaris15gen3_linux_service.py stellaris15gen3_frontend.py
+      - name: Run mocked tests without hardware access
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ./.venv/bin/python -m unittest discover -s tests -v
+      - name: Package Linux source release and checksum
+        run: ./scripts/linux/package_release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: |
+            dist/StellarisFanControl-linux.tar.gz
+            dist/StellarisFanControl-linux.tar.gz.sha256
+          if-no-files-found: error
+
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, build-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -63,6 +95,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: windows-release
+          path: release
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-release
           path: release
       - name: Publish tagged release
         env:
