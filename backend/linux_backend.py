@@ -18,6 +18,7 @@ from shared.fan_control_common import (
 )
 from shared.fan_control_ipc import linux_socket_path
 from backend.fan_control_backend import BackendController, BackendRequestHandler
+from backend.linux_ec import validate_lightbar
 from backend.linux_fan_service import state_directory
 
 
@@ -54,6 +55,8 @@ def load_settings(path: Path) -> dict[str, Any]:
         "maximum_temp": DEFAULT_MAX_FAN_TEMP,
         "gpu_power_offset": None,
         "dynamic_boost": None,
+        "lightbar_mode": None,
+        "lightbar_color": None,
     }
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
@@ -77,6 +80,13 @@ def load_settings(path: Path) -> dict[str, Any]:
         settings["gpu_power_offset"] = offset
     if isinstance(loaded.get("dynamic_boost"), bool):
         settings["dynamic_boost"] = loaded["dynamic_boost"]
+    try:
+        mode, color = validate_lightbar(loaded.get("lightbar_mode"), loaded.get("lightbar_color"))
+    except ValueError:
+        pass
+    else:
+        settings["lightbar_mode"] = mode
+        settings["lightbar_color"] = list(color)
     return settings
 
 
@@ -92,6 +102,7 @@ class LinuxBackendController(BackendController):
         self._logged_maintenance_error: str | None = None
         self._gpu_power_offset: int | None = None
         self._dynamic_boost: bool | None = None
+        self._lightbar: tuple[str, list[int]] | None = None
         settings = load_settings(settings_path)
         BackendController.configure_auto(
             self, settings["minimum_temp"], settings["maximum_temp"]
@@ -105,6 +116,10 @@ class LinuxBackendController(BackendController):
         if settings["dynamic_boost"] is not None:
             self._service.set_desired_dynamic_boost(settings["dynamic_boost"])
             self._dynamic_boost = settings["dynamic_boost"]
+        if settings["lightbar_mode"] is not None:
+            # The EC shows its rainbow after power-on; maintenance restores the choice.
+            self._service.set_desired_lightbar(settings["lightbar_mode"], settings["lightbar_color"])
+            self._lightbar = (settings["lightbar_mode"], settings["lightbar_color"])
 
     def start(self, *, start_frontend: bool = False, monitor_frontend: bool = False) -> None:
         del start_frontend, monitor_frontend
@@ -144,6 +159,13 @@ class LinuxBackendController(BackendController):
         self._save_settings()
         return result
 
+    def set_lightbar(self, mode: str, color: tuple[Any, Any, Any]) -> dict[str, Any]:
+        result = super().set_lightbar(mode, color)
+        with self._state_lock:
+            self._lightbar = (mode, list(color))
+        self._save_settings()
+        return result
+
     def request_resync(self) -> None:
         # Safe from a signal handler: only sets events.
         self._resync_requested.set()
@@ -156,6 +178,8 @@ class LinuxBackendController(BackendController):
                 "maximum_temp": self._maximum_temp,
                 "gpu_power_offset": self._gpu_power_offset,
                 "dynamic_boost": self._dynamic_boost,
+                "lightbar_mode": self._lightbar[0] if self._lightbar else None,
+                "lightbar_color": self._lightbar[1] if self._lightbar else None,
             }
         try:
             self._settings_path.parent.mkdir(parents=True, exist_ok=True)

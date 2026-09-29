@@ -233,3 +233,70 @@ class TrayMenuTests(unittest.TestCase):
             self.assertEqual(open_url.call_args.args[0].toString(), gui.PROJECT_URL)
             window._closing = True
             window.tray_icon.hide()
+
+
+class LightbarWindowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_one_option_at_a_time_with_live_apply(self):
+        from tempfile import TemporaryDirectory
+
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(FanControlWindow, "_load_initial_state"),
+            patch.object(
+                FanControlWindow, "_settings_path",
+                return_value=Path(directory) / "settings.json",
+            ),
+        ):
+            backend = Mock()
+            window = FanControlWindow(backend=backend)
+            lightbar = window.lightbar_window
+            panels = lightbar._panels
+            self.assertFalse(window.lightbar_button.isEnabled())
+            window._show_backend_state({"capabilities": {"lightbar": True}})
+            self.assertTrue(window.lightbar_button.isEnabled())
+            self.assertFalse(any(panel.isEnabled() for panel in panels.values()))
+
+            lightbar.show_state(
+                {"available": True, "mode": "rainbow", "color": [36, 20, 0], "max_level": 36}
+            )
+            self.assertTrue(lightbar.rainbow_checkbox.isChecked())
+            self.assertTrue(all(panel.isEnabled() for panel in panels.values()))
+            self.assertFalse(lightbar.color_sliders[0].isEnabled())
+            with patch.object(window, "_run") as run:
+                # Clicking the ticked option keeps it; nothing is written.
+                lightbar.rainbow_checkbox.click()
+                self.assertTrue(lightbar.rainbow_checkbox.isChecked())
+                window.apply_lightbar()
+                run.assert_not_called()
+
+                # Clicking another option switches to it directly.
+                lightbar.color_checkbox.click()
+                self.assertEqual(lightbar.selected_mode(), "color")
+                self.assertFalse(lightbar.rainbow_checkbox.isChecked())
+                self.assertTrue(lightbar.color_sliders[0].isEnabled())
+                window.apply_lightbar()
+                run.assert_called_once()
+                run.call_args.args[0]()
+                backend.request.assert_called_with(
+                    "set_lightbar", mode="color", red=36, green=20, blue=0
+                )
+                run.call_args.args[1]({})
+                window.apply_lightbar()
+                run.assert_called_once()
+
+                lightbar.color_sliders[2].setValue(5)
+                self.assertTrue(lightbar._apply_timer.isActive())
+                self.assertEqual(lightbar.requested_state(), ("color", (36, 20, 5)))
+
+                lightbar.off_checkbox.click()
+                self.assertEqual(lightbar.requested_state(), ("off", (36, 20, 5)))
+                self.assertFalse(lightbar.color_sliders[0].isEnabled())
+            lightbar.stop_pending_apply()
+            window._show_backend_state({"capabilities": {}})
+            self.assertFalse(window.lightbar_button.isEnabled())
+            window._closing = True
+            window.tray_icon.hide()

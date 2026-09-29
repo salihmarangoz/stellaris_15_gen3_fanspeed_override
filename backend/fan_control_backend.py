@@ -40,6 +40,7 @@ else:
 WINDOWS_CAPABILITIES = {
     "platform": "windows",
     "gpu_power_limit": False,
+    "lightbar": False,
     "oem_service": True,
     "exit_stops_control": True,
 }
@@ -116,6 +117,11 @@ class BackendController:
             "set_boost": lambda: self.set_boost(bool(arguments["enabled"])),
             "set_gpu_power": lambda: self.set_gpu_power(int(arguments["offset"])),
             "set_dynamic_boost": lambda: self.set_dynamic_boost(bool(arguments["enabled"])),
+            "read_lightbar": self.read_lightbar,
+            "set_lightbar": lambda: self.set_lightbar(
+                str(arguments["mode"]),
+                (arguments["red"], arguments["green"], arguments["blue"]),
+            ),
             "set_oem_service": lambda: self.set_oem_service(
                 bool(arguments["enabled"]),
                 confirmed=bool(arguments.get("confirmed", False)),
@@ -317,6 +323,18 @@ class BackendController:
         if not callable(set_offset):
             raise RuntimeError("GPU power limit control is not available on this platform")
         return set_offset(offset)
+
+    def read_lightbar(self) -> dict[str, Any]:
+        lightbar_state = getattr(self._service, "lightbar_state", None)
+        if not callable(lightbar_state):
+            raise RuntimeError("Lightbar control is not available on this platform")
+        return lightbar_state()
+
+    def set_lightbar(self, mode: str, color: tuple[Any, Any, Any]) -> dict[str, Any]:
+        set_lightbar = getattr(self._service, "set_lightbar", None)
+        if not callable(set_lightbar):
+            raise RuntimeError("Lightbar control is not available on this platform")
+        return set_lightbar(mode, color)
 
     def configure_auto(self, minimum_temp: int, maximum_temp: int) -> dict[str, Any]:
         minimum_temp = max(0, min(100, minimum_temp))

@@ -52,6 +52,16 @@ TABLE_CONTROL_ADDRESS = 0x07C5
 SPLIT_TABLES = 0x80
 AP_OEM_6_ADDRESS = 0x07C6
 ENABLE_FAN_TABLES = 0x04
+# Lightbar, as tuxedo-drivers programs it for this SKU. Bit 7 of the control
+# byte is the firmware's rainbow animation (its power-on default); the color
+# levels were validated live on 2026-09-29 while on AC power.
+LIGHTBAR_CONTROL_ADDRESS = 0x0748
+LIGHTBAR_RAINBOW = 0x80
+LIGHTBAR_RED_ADDRESS = 0x0749
+LIGHTBAR_GREEN_ADDRESS = 0x074A
+LIGHTBAR_BLUE_ADDRESS = 0x074B
+MAX_LIGHTBAR_LEVEL = 36
+LIGHTBAR_MODES = ("color", "rainbow", "off")
 
 TABLE_POINT_COUNT = 16
 CPU_TEMP_END_ADDRESS = 0x0F00
@@ -96,6 +106,9 @@ CTGP_ADDRESSES = (
     CTGP_DB_OFFSET_ADDRESS,
     CTGP_CONTROL_ADDRESS,
 )
+LIGHTBAR_COLOR_ADDRESSES = (LIGHTBAR_RED_ADDRESS, LIGHTBAR_GREEN_ADDRESS, LIGHTBAR_BLUE_ADDRESS)
+# Color first, then the animation bit, like tuxedo-drivers.
+LIGHTBAR_ADDRESSES = LIGHTBAR_COLOR_ADDRESSES + (LIGHTBAR_CONTROL_ADDRESS,)
 
 
 class EcTransport(Protocol):
@@ -197,6 +210,25 @@ def decode_duty(raw: int) -> int:
     return min(100, raw // 2)
 
 
+def validate_lightbar(mode: Any, color: Any) -> tuple[str, tuple[int, int, int]]:
+    if mode not in LIGHTBAR_MODES:
+        raise ValueError(f"The lightbar mode must be one of {', '.join(LIGHTBAR_MODES)}")
+    try:
+        levels = tuple(color)
+    except TypeError:
+        raise ValueError("The lightbar color must be three levels") from None
+    if len(levels) != 3 or any(
+        isinstance(level, bool)
+        or not isinstance(level, int)
+        or not 0 <= level <= MAX_LIGHTBAR_LEVEL
+        for level in levels
+    ):
+        raise ValueError(
+            f"The lightbar color must be three integers from 0 to {MAX_LIGHTBAR_LEVEL}"
+        )
+    return mode, (levels[0], levels[1], levels[2])
+
+
 class LinuxEcClient:
     """Validated fan-table and cTGP access for the target laptop on Linux."""
 
@@ -274,7 +306,18 @@ class LinuxEcClient:
     def read_registers(self, addresses: tuple[int, ...]) -> dict[int, int]:
         return {address: self._read(address) for address in addresses}
 
-    def _apply(self, desired: dict[int, int], order: tuple[int, ...], restore_order: tuple[int, ...]) -> bool:
+    def _apply(
+        self,
+        desired: dict[int, int],
+        order: tuple[int, ...],
+        restore_order: tuple[int, ...],
+        *,
+        force: bool = False,
+    ) -> bool:
+        """Write, verify, and roll back on mismatch. force also rewrites equal bytes.
+
+        Returns whether any byte differed from the desired state.
+        """
         with self._lock:
             self.refuse_conflicting_writer()
             previous = self.read_registers(tuple(address for address in order if address in desired))
@@ -283,10 +326,11 @@ class LinuxEcClient:
                 for address in order
                 if address in desired and previous[address] != desired[address]
             ]
-            if not changed:
+            written = [address for address in order if address in desired] if force else changed
+            if not written:
                 return False
             try:
-                for address in changed:
+                for address in written:
                     self._write(address, desired[address])
                 mismatched = [
                     address
@@ -300,10 +344,10 @@ class LinuxEcClient:
                     )
             except Exception:
                 for address in restore_order:
-                    if address in changed:
+                    if address in written:
                         self._write(address, previous[address])
                 raise
-            return True
+            return bool(changed)
 
     def _desired_state(self, cpu_raw: int | None, gpu_raw: int | None, boost: bool) -> dict[int, int]:
         control = self.read_registers((AP_OEM_ADDRESS, TABLE_CONTROL_ADDRESS, AP_OEM_6_ADDRESS))
@@ -458,3 +502,33 @@ class LinuxEcClient:
                     control &= ~CTGP_GENERAL_ENABLE
                 desired = {CTGP_CONTROL_ADDRESS: control}
             return self._apply(desired, CTGP_ADDRESSES, CTGP_ADDRESSES)
+
+    def read_lightbar(self) -> dict[str, Any]:
+        with self._lock:
+            control = self._read(LIGHTBAR_CONTROL_ADDRESS)
+            color = [self._read(address) for address in LIGHTBAR_COLOR_ADDRESSES]
+        if control & LIGHTBAR_RAINBOW:
+            mode = "rainbow"
+        else:
+            mode = "color" if any(color) else "off"
+        return {"mode": mode, "color": color}
+
+    def write_lightbar(
+        self, mode: str, color: tuple[int, int, int], *, force: bool = False
+    ) -> bool:
+        """Show a solid color, the rainbow animation, or nothing.
+
+        Only bit 7 of the control byte changes; off is color 0/0/0 without the
+        animation, as tuxedo-drivers initializes it. force rewrites the bytes
+        even when they already match. Returns whether any byte differed.
+        """
+        mode, color = validate_lightbar(mode, color)
+        with self._lock:
+            control = self._read(LIGHTBAR_CONTROL_ADDRESS)
+            if mode == "rainbow":
+                desired = {LIGHTBAR_CONTROL_ADDRESS: control | LIGHTBAR_RAINBOW}
+            else:
+                shown = color if mode == "color" else (0, 0, 0)
+                desired = dict(zip(LIGHTBAR_COLOR_ADDRESSES, shown))
+                desired[LIGHTBAR_CONTROL_ADDRESS] = control & ~LIGHTBAR_RAINBOW
+            return self._apply(desired, LIGHTBAR_ADDRESSES, LIGHTBAR_ADDRESSES, force=force)

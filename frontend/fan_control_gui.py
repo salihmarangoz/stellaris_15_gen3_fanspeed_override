@@ -13,7 +13,9 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
+    QButtonGroup,
     QCheckBox,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -60,6 +62,10 @@ GPU_LIMIT_WAIT_SECONDS = 12.0
 GPU_LIMIT_REFRESH_DELAYS_MS = (2000, 4000, 7000)
 DEFAULT_GPU_POWER_MAX_OFFSET = 50
 SERVICE_START_HINT = f"start it with 'sudo systemctl start {LINUX_SERVICE_NAME}'"
+LIGHTBAR_COLORS = (("red", "Red"), ("green", "Green"), ("blue", "Blue"))
+DEFAULT_LIGHTBAR_MAX_LEVEL = 36
+LIGHTBAR_APPLY_DELAY_MS = 300
+LIGHTBAR_RETRY_MS = 300
 
 
 class FanCurveGraph(QWidget):
@@ -364,6 +370,167 @@ class ModeToggle(QAbstractButton):
         painter.drawText(manual_rect, Qt.AlignmentFlag.AlignCenter, "Manual")
 
 
+class LightbarWindow(QDialog):
+    """Separate lightbar window. Exactly one option is ticked; clicking another
+    switches to it, and the color sliders are grayed out unless Color is ticked."""
+
+    apply_requested = Signal()
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("lightbarWindow")
+        self.setWindowTitle("Lightbar")
+        self.setMinimumWidth(480)
+        self._syncing = False
+        self._loaded = False
+        self.applied_state: tuple[str, tuple[int, ...]] | None = None
+        self._apply_timer = QTimer(self)
+        self._apply_timer.setSingleShot(True)
+        self._apply_timer.timeout.connect(self.apply_requested.emit)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(12)
+        heading = QLabel("Lightbar")
+        heading.setObjectName("heading")
+        layout.addWidget(heading)
+        self.status_label = QLabel()
+        self.status_label.setObjectName("statusText")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.color_checkbox = QCheckBox("Color")
+        self.rainbow_checkbox = QCheckBox("Rainbow animation")
+        self.off_checkbox = QCheckBox("Off")
+        self._checkboxes = {
+            "color": self.color_checkbox,
+            "rainbow": self.rainbow_checkbox,
+            "off": self.off_checkbox,
+        }
+        self._panels = {
+            mode: self._option_panel(layout, checkbox)
+            for mode, checkbox in self._checkboxes.items()
+        }
+        # Exclusive like radio buttons: clicking the ticked option cannot untick it.
+        self._option_group = QButtonGroup(self)
+        self._option_group.setExclusive(True)
+        for checkbox in self._checkboxes.values():
+            self._option_group.addButton(checkbox)
+        color_layout = self._panels["color"].layout()
+        self.color_sliders: list[QSlider] = []
+        self.color_spins: list[QSpinBox] = []
+        for key, title in LIGHTBAR_COLORS:
+            row = QHBoxLayout()
+            row.setSpacing(14)
+            label = QLabel(title)
+            label.setObjectName("fanName")
+            label.setFixedWidth(60)
+            row.addWidget(label)
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setObjectName(f"lightbar{title}")
+            slider.setRange(0, DEFAULT_LIGHTBAR_MAX_LEVEL)
+            slider.setPageStep(4)
+            slider.setAccessibleName(f"Lightbar {key}")
+            row.addWidget(slider, 1)
+            spin = QSpinBox()
+            spin.setRange(0, DEFAULT_LIGHTBAR_MAX_LEVEL)
+            spin.setFixedWidth(88)
+            row.addWidget(spin)
+            slider.valueChanged.connect(spin.setValue)
+            spin.valueChanged.connect(slider.setValue)
+            slider.valueChanged.connect(self._color_changed)
+            color_layout.addLayout(row)
+            self.color_sliders.append(slider)
+            self.color_spins.append(spin)
+        for checkbox in self._checkboxes.values():
+            checkbox.toggled.connect(self._option_toggled)
+        layout.addStretch()
+        self.show_loading()
+
+    def _option_panel(self, parent_layout: QVBoxLayout, checkbox: QCheckBox) -> ControlPanel:
+        panel = ControlPanel()
+        panel.setObjectName("panel")
+        column = QVBoxLayout(panel)
+        column.setContentsMargins(18, 12, 18, 12)
+        column.setSpacing(8)
+        column.addWidget(checkbox)
+        parent_layout.addWidget(panel)
+        return panel
+
+    def selected_mode(self) -> str | None:
+        for mode, checkbox in self._checkboxes.items():
+            if checkbox.isChecked():
+                return mode
+        return None
+
+    def requested_state(self) -> tuple[str, tuple[int, ...]] | None:
+        mode = self.selected_mode()
+        if not self._loaded or mode is None:
+            return None
+        return mode, tuple(slider.value() for slider in self.color_sliders)
+
+    def schedule_apply(self, delay_ms: int) -> None:
+        self._apply_timer.start(delay_ms)
+
+    def stop_pending_apply(self) -> None:
+        self._apply_timer.stop()
+
+    def show_loading(self) -> None:
+        self._loaded = False
+        self.status_label.setText("Reading lightbar...")
+        self._update_enabled()
+
+    def show_state(self, state: dict[str, Any]) -> None:
+        mode = state.get("mode")
+        color = state.get("color")
+        if not state.get("available") or mode not in self._checkboxes or not isinstance(color, list):
+            self.show_error(str(state.get("error") or "The lightbar state is unavailable"))
+            return
+        maximum = int(state.get("max_level") or DEFAULT_LIGHTBAR_MAX_LEVEL)
+        self._syncing = True
+        try:
+            for slider, spin, level in zip(self.color_sliders, self.color_spins, color):
+                slider.setMaximum(maximum)
+                spin.setMaximum(maximum)
+                slider.setValue(int(level))
+            for name, checkbox in self._checkboxes.items():
+                checkbox.setChecked(name == mode)
+        finally:
+            self._syncing = False
+        self.applied_state = (mode, tuple(slider.value() for slider in self.color_sliders))
+        self._loaded = True
+        self.status_label.setText("Click an option to switch to it. Changes apply immediately.")
+        self._update_enabled()
+
+    def show_error(self, message: str) -> None:
+        lines = message.strip().splitlines()
+        reason = lines[-1].split(": ", 1)[-1] if lines else "unknown error"
+        self.status_label.setText(f"Lightbar unavailable | {reason}")
+        self.applied_state = None
+        self._loaded = False
+        self._update_enabled()
+
+    def _update_enabled(self) -> None:
+        selected = self.selected_mode()
+        for panel in self._panels.values():
+            panel.setEnabled(self._loaded)
+        for slider, spin in zip(self.color_sliders, self.color_spins):
+            slider.setEnabled(selected == "color")
+            spin.setEnabled(selected == "color")
+
+    def _option_toggled(self, checked: bool) -> None:
+        if self._syncing:
+            return
+        self._update_enabled()
+        if checked:
+            self.schedule_apply(0)
+
+    def _color_changed(self, value: int) -> None:
+        del value
+        if not self._syncing and self.selected_mode() == "color":
+            self.schedule_apply(LIGHTBAR_APPLY_DELAY_MS)
+
+
 class WorkerSignals(QObject):
     completed = Signal(object)
     failed = Signal(str)
@@ -502,6 +669,18 @@ class FanControlWindow(QMainWindow):
         self.mode_toggle.toggled.connect(self._mode_changed)
         mode_row.addWidget(self.mode_toggle)
         mode_row.addStretch()
+        self.lightbar_button = QPushButton("Lightbar")
+        self.lightbar_button.setToolTip(
+            "Open the lightbar settings"
+            if self._linux
+            else "Lightbar control is available on Linux only for now."
+        )
+        self.lightbar_button.setEnabled(False)
+        self.lightbar_button.clicked.connect(self.open_lightbar)
+        mode_row.addWidget(self.lightbar_button)
+        mode_row.addSpacing(10)
+        self.lightbar_window = LightbarWindow(self)
+        self.lightbar_window.apply_requested.connect(self.apply_lightbar)
         self.start_minimized_checkbox = QCheckBox("Start minimized")
         self.start_minimized_checkbox.setObjectName("startMinimized")
         self.start_minimized_checkbox.setToolTip(
@@ -1308,6 +1487,7 @@ class FanControlWindow(QMainWindow):
         else:
             self.control_method_label.setText("Detecting control...")
         capabilities = backend.get("capabilities") or {}
+        self.lightbar_button.setEnabled(bool(capabilities.get("lightbar")))
         if not capabilities.get("gpu_power_limit"):
             self._gpu_power_available = False
             self._update_gpu_power_enabled()
@@ -1502,6 +1682,60 @@ class FanControlWindow(QMainWindow):
             complete,
             "Enabling Dynamic Boost..." if enabled else "Disabling Dynamic Boost...",
             on_failed=failed,
+        )
+
+    def open_lightbar(self) -> None:
+        self.lightbar_window.show()
+        self.lightbar_window.raise_()
+        self.lightbar_window.activateWindow()
+        self.lightbar_window.show_loading()
+        self._load_lightbar()
+
+    def _load_lightbar(self) -> None:
+        if self._closing or not self.lightbar_window.isVisible():
+            return
+        if self._busy:
+            QTimer.singleShot(LIGHTBAR_RETRY_MS, self._load_lightbar)
+            return
+        self._run(
+            lambda: self._backend.request("read_lightbar"),
+            self.lightbar_window.show_state,
+            "Reading lightbar...",
+            on_failed=self.lightbar_window.show_error,
+            show_error=False,
+        )
+
+    def apply_lightbar(self) -> None:
+        request = self.lightbar_window.requested_state()
+        if self._closing or request is None or request == self.lightbar_window.applied_state:
+            return
+        if self._busy:
+            # Keep the latest choice; it is sent once the current operation ends.
+            self.lightbar_window.schedule_apply(LIGHTBAR_RETRY_MS)
+            return
+        mode, (red, green, blue) = request
+
+        def complete(_state: dict[str, Any]) -> None:
+            self.lightbar_window.applied_state = request
+            if mode == "color":
+                self._set_status(f"Lightbar color set to {red} / {green} / {blue}")
+            else:
+                self._set_status(
+                    "Lightbar rainbow animation on" if mode == "rainbow" else "Lightbar off"
+                )
+
+        def failed(details: str) -> None:
+            self.lightbar_window.show_error(details)
+            QTimer.singleShot(LIGHTBAR_RETRY_MS, self._load_lightbar)
+
+        self._run(
+            lambda: self._backend.request(
+                "set_lightbar", mode=mode, red=red, green=green, blue=blue
+            ),
+            complete,
+            "Setting lightbar...",
+            on_failed=failed,
+            show_error=False,
         )
 
     def _mark_gpu_power_changed(self) -> None:
@@ -1766,6 +2000,7 @@ class FanControlWindow(QMainWindow):
                 return
             self._manual_apply_timer.stop()
             self._gpu_power_apply_timer.stop()
+            self.lightbar_window.stop_pending_apply()
             self._exit_prepared = True
             self.close()
             return
@@ -1860,6 +2095,8 @@ class FanControlWindow(QMainWindow):
         self._status_timer.stop()
         self._backend_watchdog_timer.stop()
         self._gpu_power_apply_timer.stop()
+        self.lightbar_window.stop_pending_apply()
+        self.lightbar_window.close()
         try:
             self._backend.request("frontend_detach", request_timeout=0.5)
         except Exception:

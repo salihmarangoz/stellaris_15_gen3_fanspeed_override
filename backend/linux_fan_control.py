@@ -8,6 +8,7 @@ from backend.linux_backend import acquire_process_lock
 from backend.linux_ec import (
     CONTROL_ADDRESSES,
     CTGP_ADDRESSES,
+    LIGHTBAR_ADDRESSES,
     DevMemEcWindow,
     LinuxEcClient,
     tuxedo_daemon_running,
@@ -31,7 +32,9 @@ def probe() -> None:
     try:
         registers = {
             f"0x{address:04X}": f"0x{value:02X}"
-            for address, value in client.read_registers(CONTROL_ADDRESSES + CTGP_ADDRESSES).items()
+            for address, value in client.read_registers(
+                CONTROL_ADDRESSES + CTGP_ADDRESSES + LIGHTBAR_ADDRESSES
+            ).items()
         }
         curve = client.curve()
         print_json(

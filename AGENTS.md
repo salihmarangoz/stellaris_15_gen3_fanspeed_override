@@ -16,9 +16,10 @@ This repository contains experimental, hardware-specific fan control for a Stell
 - Back up the active OEM curve before a manual write and once when entering Auto mode. Do not create a backup on every 15-second Auto update.
 - Do not perform live fan writes as part of routine tests. A user must explicitly authorize a hardware-changing test. Prefer pure curve tests, mocks, and read-only probes.
 - Preserve the OEM Fan Boost control as the immediate 100% fallback.
-- Linux direct EC access must stay gated by the DMI board/SKU, the pinned DSDT SHA-256, EC project ID `0x10`, and `0x078E` bit 6. It may write only `0x0741` bit 0, `0x0751` (`0xA0` normal, `0x40` Boost), `0x07C5` bit 7, `0x07C6` bit 2, the tables `0x0F00`-`0x0F5F`, and cTGP `0x0743`-`0x0746`. Keep read-modify-write for bit fields, tables-before-enable-bits order, readback verification, rollback, and the refusal while `tccd` runs.
+- Linux direct EC access must stay gated by the DMI board/SKU, the pinned DSDT SHA-256, EC project ID `0x10`, and `0x078E` bit 6. It may write only `0x0741` bit 0, `0x0751` (`0xA0` normal, `0x40` Boost), `0x07C5` bit 7, `0x07C6` bit 2, the tables `0x0F00`-`0x0F5F`, cTGP `0x0743`-`0x0746`, and the lightbar (`0x0748` bit 7, colors `0x0749`-`0x074B` at 0-36 each). Keep read-modify-write for bit fields, tables-before-enable-bits order, readback verification, rollback, and the refusal while `tccd` runs.
 - Linux writes the same duty to all 16 zones of each table so the unreliable EC temperature cannot change the fan speed.
 - The GPU power limit (cTGP offset) and the Dynamic Boost switch (`0x0743` bit 1) are Linux-only; the offset is limited to 0-50 W above the 115 W base and to the VBIOS maximum. The Windows GUI shows them disabled. NVIDIA applies them only while `nvidia-powerd` runs.
+- Lightbar control is Linux-only and grayed out on Windows. The service writes it only when the user chose a mode, leaves the other `0x0748` bits alone, and never touches the unvalidated battery-mode copy at `0x07E2`-`0x07E5`.
 
 ## Architecture
 
@@ -37,9 +38,9 @@ This repository contains experimental, hardware-specific fan control for a Stell
 - `scripts/setup_pawnio.ps1`: installs PawnIO and downloads the pinned, hash-verified AMD module.
 - `scripts/build_exe.ps1`: reproducible PyInstaller entry point.
 - `scripts/launch_fan_control.ps1` and `scripts/run_fan_control_gui.cmd`: source launchers.
-- `backend/linux_ec.py`: Linux EC window transport, platform gates, fan-table and cTGP encoding, verified writes with rollback.
+- `backend/linux_ec.py`: Linux EC window transport, platform gates, fan-table, cTGP, and lightbar encoding, verified writes with rollback.
 - `backend/linux_sensors.py`: Linux `k10temp`, NVIDIA (with runtime-suspend detection), and RAPL CPU power readings.
-- `backend/linux_fan_service.py`: Linux counterpart of `ControlCenterService`, drift repair, backups, and cTGP selection (kernel sysfs first, direct EC otherwise).
+- `backend/linux_fan_service.py`: Linux counterpart of `ControlCenterService`, drift repair, backups, cTGP selection (kernel sysfs first, direct EC otherwise), and the lightbar choice.
 - `backend/linux_backend.py`: root systemd service runtime, persistent settings, maintenance thread, peer-credential Unix-socket server, and signal handling.
 - `backend/linux_fan_control.py`: Linux low-level CLI with read-only `probe` and dry-run writes.
 - `stellaris15gen3_linux_service.py`: Linux service entry point.

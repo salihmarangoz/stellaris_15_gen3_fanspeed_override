@@ -215,3 +215,46 @@ QFrame#panel QLabel#limitBadgePending {
     background: #292e33;
     border: 1px solid #454c52;
 }
+
+QDialog#lightbarWindow QCheckBox {
+    background: transparent;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+QDialog#lightbarWindow QCheckBox:disabled {
+    color: #727980;
+}
+
+QSlider#lightbarRed::sub-page:horizontal {
+    background: #e0605a;
+}
+
+QSlider#lightbarRed::handle:horizontal {
+    border-color: #e0605a;
+}
+
+QSlider#lightbarGreen::sub-page:horizontal {
+    background: #4cc764;
+}
+
+QSlider#lightbarGreen::handle:horizontal {
+    border-color: #4cc764;
+}
+
+QSlider#lightbarBlue::sub-page:horizontal {
+    background: #4f8ff0;
+}
+
+QSlider#lightbarBlue::handle:horizontal {
+    border-color: #4f8ff0;
+}
+
+QDialog#lightbarWindow QSlider::sub-page:horizontal:disabled {
+    background: #4a5157;
+}
+
+QDialog#lightbarWindow QSlider::handle:horizontal:disabled {
+    background: #9aa1a7;
+    border-color: #59636c;
+}

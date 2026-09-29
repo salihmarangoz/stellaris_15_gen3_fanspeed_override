@@ -39,9 +39,9 @@ Last reviewed: 2026-09-29
 |   |-- fan_control.py           low-level MQTT, curves, backup/restore CLI
 |   |-- direct_fan_control.py    validated direct Uniwill EC fan-table access
 |   |-- fan_control_probe.py     read-only MQTT diagnostic utility
-|   |-- linux_ec.py              Linux EC window, platform gates, verified table/cTGP writes
+|   |-- linux_ec.py              Linux EC window, platform gates, verified table/cTGP/lightbar writes
 |   |-- linux_sensors.py         Linux k10temp, NVIDIA, and RAPL readings
-|   |-- linux_fan_service.py     Linux service singleton, drift repair, backups, cTGP
+|   |-- linux_fan_service.py     Linux service singleton, drift repair, backups, cTGP, lightbar
 |   |-- linux_backend.py         Linux root service runtime and peer-credential socket
 |   |-- linux_fan_control.py     Linux low-level CLI (read-only probe, dry-run writes)
 |   `-- requirements.txt         Windows backend runtime dependencies
@@ -53,7 +53,7 @@ Last reviewed: 2026-09-29
 |   |-- __init__.py              test package marker
 |   |-- test_fan_control_backend.py
 |                                pure/mocked backend, safety, and IPC tests
-|   |-- test_session_shutdown.py real Qt startup and mocked shutdown/mode tests
+|   |-- test_session_shutdown.py real Qt startup, mocked shutdown/mode, and lightbar window tests
 |   `-- test_linux_backend.py    fake-EC/sysfs Linux client, sensor, safety, and IPC tests
 |-- scripts\
 |   |-- launch_fan_control.ps1   source setup and normal-user launcher
@@ -140,7 +140,7 @@ Linux runtime paths:
 /etc/systemd/system/nvidia-powerd.service   only when the driver package lacks it
 /etc/dbus-1/system.d/nvidia-dbus.conf       only when no nvidia-powerd policy exists
 /var/lib/stellaris-fan-control/
-|-- settings.json                    Automatic endpoints, GPU power offset, Dynamic Boost
+|-- settings.json                    Automatic endpoints, GPU power offset, Dynamic Boost, lightbar
 `-- fan-backups/LINUX_EC-*.json      register snapshots before writes
 ```
 

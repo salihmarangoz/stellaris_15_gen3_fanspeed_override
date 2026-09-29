@@ -1,18 +1,28 @@
 import json
 import os
 import threading
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
-from backend.linux_ec import PROC_DIRECTORY, MAX_CTGP_OFFSET_WATTS, LinuxEcClient
+from backend.linux_ec import (
+    MAX_CTGP_OFFSET_WATTS,
+    MAX_LIGHTBAR_LEVEL,
+    PROC_DIRECTORY,
+    LinuxEcClient,
+    validate_lightbar,
+)
 from backend.linux_sensors import NvidiaLimits, last_nvidia_limits, last_nvidia_limits_age
 
 
 T = TypeVar("T")
 DEFAULT_STATE_DIRECTORY = Path("/var/lib/stellaris-fan-control")
 TABLE_NAME = "LINUX_EC"
+# The lightbar may forget its state without the bytes changing, so the saved
+# choice is rewritten this often even when the 15-second check finds no drift.
+LIGHTBAR_REFRESH_SECONDS = 15 * 60
 MAINLINE_CTGP_GLOB = "bus/platform/devices/INOU0000:*/ctgp_offset"
 TUXEDO_CTGP_PATH = "devices/platform/tuxedo_nvidia_power_ctrl/ctgp_offset"
 
@@ -80,6 +90,9 @@ class LinuxFanService:
         self._desired_boost = False
         self._desired_gpu_offset: int | None = None
         self._desired_dynamic_boost: bool | None = None
+        self._desired_lightbar: tuple[str, tuple[int, int, int]] | None = None
+        self._lightbar_written_at: float | None = None
+        self._clock: Callable[[], float] = time.monotonic
 
     @classmethod
     def instance(cls) -> "LinuxFanService":
@@ -94,6 +107,7 @@ class LinuxFanService:
         return {
             "platform": "linux",
             "gpu_power_limit": True,
+            "lightbar": True,
             "oem_service": False,
             "exit_stops_control": False,
         }
@@ -179,6 +193,7 @@ class LinuxFanService:
                 and not self._desired_boost
                 and self._desired_gpu_offset is None
                 and self._desired_dynamic_boost is None
+                and self._desired_lightbar is None
             ):
                 return []
 
@@ -201,6 +216,16 @@ class LinuxFanService:
                 ):
                     client.write_dynamic_boost(self._desired_dynamic_boost)
                     corrections.append("Dynamic Boost")
+                if self._desired_lightbar is not None:
+                    now = self._clock()
+                    refresh = (
+                        self._lightbar_written_at is None
+                        or now - self._lightbar_written_at >= LIGHTBAR_REFRESH_SECONDS
+                    )
+                    if client.write_lightbar(*self._desired_lightbar, force=refresh):
+                        corrections.append("lightbar")
+                    if refresh:
+                        self._lightbar_written_at = now
                 return corrections
 
             return self._execute(operation, retry=False)
@@ -286,6 +311,44 @@ class LinuxFanService:
         except Exception as exc:
             state["available"] = False
             state["error"] = str(exc)
+        return state
+
+    def set_desired_lightbar(self, mode: str, color: tuple[int, int, int]) -> None:
+        with self._operation_lock:
+            self._desired_lightbar = validate_lightbar(mode, color)
+
+    def set_lightbar(self, mode: str, color: tuple[int, int, int]) -> dict[str, Any]:
+        desired = validate_lightbar(mode, color)
+
+        def operation(client: LinuxEcClient) -> None:
+            client.write_lightbar(*desired, force=True)
+            self._desired_lightbar = desired
+            self._lightbar_written_at = self._clock()
+
+        self._execute(operation, retry=False)
+        return self.lightbar_state()
+
+    def lightbar_state(self) -> dict[str, Any]:
+        state: dict[str, Any] = {
+            "available": True,
+            "mode": None,
+            "color": None,
+            "max_level": MAX_LIGHTBAR_LEVEL,
+            "error": None,
+        }
+        try:
+            shown = self._execute(lambda client: client.read_lightbar())
+        except Exception as exc:
+            state["available"] = False
+            state["error"] = str(exc)
+            return state
+        requested = self._desired_lightbar
+        if requested is None:
+            # Nothing chosen yet: report what the EC shows (rainbow after power-on).
+            state["mode"], state["color"] = shown["mode"], shown["color"]
+        else:
+            # The requested color survives Off and Rainbow, which do not show it.
+            state["mode"], state["color"] = requested[0], list(requested[1])
         return state
 
     def close(self, wait: bool = True) -> None:

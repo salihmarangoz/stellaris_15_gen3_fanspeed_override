@@ -22,6 +22,10 @@ from backend.linux_ec import (
     CTGP_OFFSET_ADDRESS,
     FAN_MODE_ADDRESS,
     GPU_DUTY_ADDRESS,
+    LIGHTBAR_BLUE_ADDRESS,
+    LIGHTBAR_CONTROL_ADDRESS,
+    LIGHTBAR_GREEN_ADDRESS,
+    LIGHTBAR_RED_ADDRESS,
     TABLE_ADDRESSES,
     TABLE_CONTROL_ADDRESS,
     LinuxEcClient,
@@ -51,6 +55,10 @@ PROBED_EC = {
     0x0744: 0x00,
     0x0745: 0xFF,
     0x0746: 0x19,
+    0x0748: 0x80,
+    0x0749: 0x00,
+    0x074A: 0x00,
+    0x074B: 0x00,
     0x0751: 0xA0,
     0x075B: 0x50,
     0x075C: 0x50,
@@ -207,6 +215,55 @@ class LinuxEcClientTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             client.write_ctgp_offset(51)
 
+    def test_lightbar_modes_change_only_the_animation_bit_and_colors(self) -> None:
+        ec = FakeEc()
+        ec.memory[LIGHTBAR_CONTROL_ADDRESS] = 0x88
+        client = make_client(ec)
+        self.assertEqual(client.read_lightbar(), {"mode": "rainbow", "color": [0, 0, 0]})
+        self.assertTrue(client.write_lightbar("color", (36, 36, 0)))
+        # Colors first, then the animation bit, like tuxedo-drivers.
+        self.assertEqual(
+            [address for address, _ in ec.writes],
+            [LIGHTBAR_RED_ADDRESS, LIGHTBAR_GREEN_ADDRESS, LIGHTBAR_CONTROL_ADDRESS],
+        )
+        self.assertEqual(ec.memory[LIGHTBAR_CONTROL_ADDRESS], 0x08)
+        self.assertEqual(client.read_lightbar(), {"mode": "color", "color": [36, 36, 0]})
+        ec.writes.clear()
+        self.assertFalse(client.write_lightbar("color", (36, 36, 0)))
+        self.assertEqual(ec.writes, [])
+        # A forced refresh rewrites matching bytes but reports no drift.
+        self.assertFalse(client.write_lightbar("color", (36, 36, 0), force=True))
+        self.assertEqual(
+            [address for address, _ in ec.writes],
+            [LIGHTBAR_RED_ADDRESS, LIGHTBAR_GREEN_ADDRESS, LIGHTBAR_BLUE_ADDRESS, LIGHTBAR_CONTROL_ADDRESS],
+        )
+        client.write_lightbar("rainbow", (1, 2, 3))
+        self.assertEqual(ec.memory[LIGHTBAR_CONTROL_ADDRESS], 0x88)
+        self.assertEqual(ec.memory[LIGHTBAR_BLUE_ADDRESS], 0)
+        client.write_lightbar("off", (36, 36, 0))
+        self.assertEqual(ec.memory[LIGHTBAR_CONTROL_ADDRESS], 0x08)
+        self.assertEqual(client.read_lightbar(), {"mode": "off", "color": [0, 0, 0]})
+
+    def test_lightbar_values_are_validated_and_tccd_blocks_writes(self) -> None:
+        ec = FakeEc()
+        client = make_client(ec)
+        for mode, color in (
+            ("blink", (1, 1, 1)),
+            ("color", (37, 0, 0)),
+            ("color", (-1, 0, 0)),
+            ("color", (True, 0, 0)),
+            ("color", (1.5, 0, 0)),
+            ("color", (1, 1)),
+            ("color", None),
+        ):
+            with self.subTest(mode=mode, color=color):
+                with self.assertRaises(ValueError):
+                    client.write_lightbar(mode, color)
+        self.assertEqual(ec.writes, [])
+        blocked = make_client(FakeEc(), conflict=True)
+        with self.assertRaisesRegex(RuntimeError, "tccd"):
+            blocked.write_lightbar("off", (0, 0, 0))
+
     def test_fan_info_decodes_rpm_and_rejects_implausible(self) -> None:
         ec = FakeEc()
         client = make_client(ec)
@@ -337,6 +394,9 @@ class FakeLinuxService:
         self.boost.append(enabled)
         return enabled
 
+    def set_lightbar(self, mode: str, color: tuple) -> dict:
+        return {"available": True, "mode": mode, "color": list(color)}
+
     def close(self, wait: bool = True) -> None:
         del wait
 
@@ -348,6 +408,15 @@ def controller_with(service: FakeLinuxService) -> BackendController:
 
 
 class ControllerSafetyTests(unittest.TestCase):
+    def test_lightbar_commands_need_platform_support(self) -> None:
+        controller = controller_with(FakeLinuxService())
+        state = controller.dispatch(
+            "set_lightbar", {"mode": "color", "red": 1, "green": 2, "blue": 3}
+        )
+        self.assertEqual(state["color"], [1, 2, 3])
+        with self.assertRaisesRegex(RuntimeError, "not available"):
+            controller.dispatch("read_lightbar", {})
+
     def test_powered_off_gpu_lets_auto_use_the_cpu_alone(self) -> None:
         service = FakeLinuxService()
         controller = controller_with(service)
@@ -417,6 +486,8 @@ class FakeServiceClient:
         self.drifted = False
         self.ctgp = 0
         self.boost_on = True
+        self.lightbar = {"mode": "rainbow", "color": [0, 0, 0]}
+        self.lightbar_writes: list[tuple[str, tuple[int, int, int], bool]] = []
 
     def connect(self) -> None:
         pass
@@ -457,6 +528,18 @@ class FakeServiceClient:
 
     def snapshot(self) -> dict:
         return {"Name": "LINUX_EC", "Registers": {}}
+
+    def read_lightbar(self) -> dict:
+        return dict(self.lightbar)
+
+    def write_lightbar(self, mode: str, color: tuple[int, int, int], *, force: bool = False) -> bool:
+        self.lightbar_writes.append((mode, color, force))
+        shown = {"mode": mode, "color": list(color) if mode == "color" else [0, 0, 0]}
+        if mode == "rainbow":
+            shown["color"] = self.lightbar["color"]
+        changed = shown != self.lightbar
+        self.lightbar = shown
+        return changed
 
 
 class LinuxFanServiceTests(unittest.TestCase):
@@ -506,6 +589,44 @@ class LinuxFanServiceTests(unittest.TestCase):
         self.client.boost_on = True
         self.assertEqual(self.service.maintain(), ["Dynamic Boost"])
         self.assertFalse(self.client.boost_on)
+
+    def test_lightbar_is_set_reported_and_maintained(self) -> None:
+        self.assertEqual(self.service.lightbar_state()["mode"], "rainbow")
+        self.assertEqual(self.service.maintain(), [])
+        self.assertEqual(self.client.lightbar_writes, [])
+        with self.assertRaises(ValueError):
+            self.service.set_lightbar("color", (40, 0, 0))
+        state = self.service.set_lightbar("off", (36, 20, 0))
+        # Off shows nothing but keeps the chosen color for the next Color pick.
+        self.assertEqual((state["mode"], state["color"], state["max_level"]), ("off", [36, 20, 0], 36))
+        self.assertEqual(self.client.lightbar["color"], [0, 0, 0])
+        self.client.lightbar = {"mode": "rainbow", "color": [0, 0, 0]}
+        self.assertEqual(self.service.maintain(), ["lightbar"])
+        self.assertEqual(self.client.lightbar["mode"], "off")
+
+    def test_lightbar_is_rewritten_every_15_minutes(self) -> None:
+        from backend.linux_fan_service import LIGHTBAR_REFRESH_SECONDS
+
+        now = [1000.0]
+        self.service._clock = lambda: now[0]
+        self.service.set_lightbar("color", (36, 36, 0))
+        self.assertEqual(self.client.lightbar_writes[-1][2], True)
+        self.assertEqual(self.service.maintain(), [])
+        self.assertEqual(self.client.lightbar_writes[-1][2], False)
+        now[0] += LIGHTBAR_REFRESH_SECONDS - 1
+        self.service.maintain()
+        self.assertEqual(self.client.lightbar_writes[-1][2], False)
+        now[0] += 1
+        # A routine refresh is not reported as drift.
+        self.assertEqual(self.service.maintain(), [])
+        self.assertEqual(self.client.lightbar_writes[-1][2], True)
+        self.service.maintain()
+        self.assertEqual(self.client.lightbar_writes[-1][2], False)
+
+    def test_restored_lightbar_is_rewritten_at_the_first_check(self) -> None:
+        self.service.set_desired_lightbar("rainbow", (0, 0, 0))
+        self.service.maintain()
+        self.assertEqual(self.client.lightbar_writes, [("rainbow", (0, 0, 0), True)])
 
     def test_gpu_offset_prefers_the_kernel_sysfs_attribute(self) -> None:
         attribute = Path(self.state.name) / "ctgp_offset"
@@ -567,14 +688,23 @@ class LinuxServiceSettingsTests(unittest.TestCase):
         LinuxFanService._instance = None
         with TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
-            path.write_text(json.dumps({"minimum_temp": 90, "maximum_temp": 20, "gpu_power_offset": True, "dynamic_boost": "no"}))
+            path.write_text(json.dumps({"minimum_temp": 90, "maximum_temp": 20, "gpu_power_offset": True, "dynamic_boost": "no", "lightbar_mode": "color", "lightbar_color": [40, 0, 0]}))
             settings = load_settings(path)
             self.assertEqual((settings["minimum_temp"], settings["maximum_temp"]), (35, 75))
             self.assertIsNone(settings["gpu_power_offset"])
             self.assertIsNone(settings["dynamic_boost"])
+            self.assertIsNone(settings["lightbar_mode"])
             controller = LinuxBackendController(path)
             controller.configure_auto(40, 70)
             self.assertEqual(json.loads(path.read_text())["maximum_temp"], 70)
+            client = FakeServiceClient()
+            controller._service._client_factory = lambda: client
+            controller.set_lightbar("color", (36, 36, 0))
+            saved = json.loads(path.read_text())
+            self.assertEqual((saved["lightbar_mode"], saved["lightbar_color"]), ("color", [36, 36, 0]))
+            LinuxFanService._instance = None
+            restored = LinuxBackendController(path)
+            self.assertEqual(restored._service._desired_lightbar, ("color", (36, 36, 0)))
             config = Path(directory) / "config.json"
             config.write_text('{"allowed_uids": [1000]}')
             self.assertEqual(load_allowed_uids(config), frozenset({0, 1000}))
