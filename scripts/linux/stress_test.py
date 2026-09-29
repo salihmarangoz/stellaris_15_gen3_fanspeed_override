@@ -205,11 +205,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--duration", type=int, default=180)
     parser.add_argument("--cooldown", type=int, default=30)
+    parser.add_argument("--no-cpu", action="store_true")
     parser.add_argument("--no-gpu", action="store_true")
     parser.add_argument("--gpu-worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.gpu_worker:
         return gpu_worker()
+    if args.no_cpu and args.no_gpu:
+        print("--no-cpu and --no-gpu together leave nothing to load.")
+        return 2
     if os.geteuid() == 0:
         print("Run as your normal user, not root.")
         return 2
@@ -233,7 +237,7 @@ def main() -> int:
     phase = "load"
     print(f"Stress test: {args.duration} s load + {args.cooldown} s cooldown. Ctrl+C stops it.")
     try:
-        cpu_load = start_cpu_load(args.duration)
+        cpu_load = [] if args.no_cpu else start_cpu_load(args.duration)
         gpu_load = None if args.no_gpu else start_gpu_load()
         print(" time phase   CPU C  GPU C  CPU W  GPU W  target  fanCPU fanGPU   RPM CPU/GPU  notes")
         while True:

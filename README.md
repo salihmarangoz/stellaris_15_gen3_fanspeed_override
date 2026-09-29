@@ -240,7 +240,7 @@ sudo python3 -m backend.linux_fan_control restore /var/lib/stellaris-fan-control
 
 Every write first saves a `LINUX_EC-*.json` backup in `/var/lib/stellaris-fan-control/fan-backups`.
 
-`scripts/linux/stress_test.py` loads every CPU core and the NVIDIA GPU for 180 seconds, samples the running service every two seconds, writes a CSV report, and stops the load if the CPU reaches 96 C or the GPU 90 C. Run it as your user with the GUI environment:
+`scripts/linux/stress_test.py` loads every CPU core and the NVIDIA GPU for 180 seconds, samples the running service every two seconds, writes a CSV report, and stops the load if the CPU reaches 96 C or the GPU 90 C. Add `--no-cpu` or `--no-gpu` to load only one of them. Run it as your user with the GUI environment:
 
 ```bash
 /opt/stellaris-fan-control/.venv/bin/python scripts/linux/stress_test.py
