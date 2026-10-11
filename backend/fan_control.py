@@ -15,7 +15,8 @@ import paho.mqtt.client as mqtt
 if __package__:
     from backend.direct_fan_control import DirectEcClient
 else:
-    from direct_fan_control import DirectEcClient
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from backend.direct_fan_control import DirectEcClient
 
 
 HOST = "::1"

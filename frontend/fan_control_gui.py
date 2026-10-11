@@ -595,6 +595,7 @@ class FanControlWindow(QMainWindow):
         self._gpu_power_apply_timer.setInterval(400)
         self._gpu_power_apply_timer.timeout.connect(self.apply_gpu_power)
         self._gpu_power_available = False
+        self._lightbar_available = False
         self._gpu_power_base: float | None = None
         self._gpu_power_state: dict[str, Any] = {}
         self._faults: dict[str, str | None] = {}
@@ -640,6 +641,16 @@ class FanControlWindow(QMainWindow):
         self.control_method_label = QLabel("Detecting control...")
         self.control_method_label.setObjectName("methodBadge")
         heading_row.addWidget(self.control_method_label)
+        self.gpu_thermal_warning = QLabel("\u26a0")
+        self.gpu_thermal_warning.setObjectName("thermalThrottleWarning")
+        self.gpu_thermal_warning.setAccessibleName("GPU software thermal throttling warning")
+        self.gpu_thermal_warning.setToolTip(
+            "NVIDIA reports software thermal throttling.\n"
+            "GPU or memory thermal limits may be reducing performance.\n"
+            "Refreshed with sensor telemetry (about every 10 seconds)."
+        )
+        self.gpu_thermal_warning.hide()
+        heading_row.addWidget(self.gpu_thermal_warning)
         self.exit_button = QPushButton("Quit" if self._linux else "Exit")
         self.exit_button.setObjectName("exitButton")
         self.exit_button.setToolTip(
@@ -673,7 +684,7 @@ class FanControlWindow(QMainWindow):
         self.lightbar_button.setToolTip(
             "Open the lightbar settings"
             if self._linux
-            else "Lightbar control is available on Linux only for now."
+            else "Stop GCUBridge to enable lightbar settings in Direct EC mode."
         )
         self.lightbar_button.setEnabled(False)
         self.lightbar_button.clicked.connect(self.open_lightbar)
@@ -852,6 +863,7 @@ class FanControlWindow(QMainWindow):
         self.gpu_power_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.gpu_power_slider.setAccessibleName("GPU sustained power limit")
         self.gpu_power_slider.valueChanged.connect(self._gpu_power_value_changed)
+        self.gpu_power_slider.sliderPressed.connect(self._gpu_power_apply_timer.stop)
         self.gpu_power_slider.sliderReleased.connect(self._schedule_gpu_power_apply)
         self.gpu_power_slider.actionTriggered.connect(
             lambda _action: None
@@ -862,7 +874,8 @@ class FanControlWindow(QMainWindow):
         self.dynamic_boost_checkbox = QCheckBox("Dynamic Boost")
         self.dynamic_boost_checkbox.setToolTip(
             "Let the GPU borrow up to 25 W more when the CPU is lightly loaded, "
-            "never above the GPU's maximum limit. Needs nvidia-powerd."
+            "never above the GPU's maximum limit."
+            + (" Needs nvidia-powerd." if self._linux else " Requires the NVIDIA driver.")
         )
         self.dynamic_boost_checkbox.toggled.connect(self._dynamic_boost_toggled)
         controls.addWidget(self.dynamic_boost_checkbox)
@@ -870,11 +883,7 @@ class FanControlWindow(QMainWindow):
 
         result = QHBoxLayout()
         result.setSpacing(10)
-        self.gpu_power_equation_label = QLabel(
-            "Reading GPU power limit..."
-            if self._linux
-            else "GPU power control is available on Linux only for now."
-        )
+        self.gpu_power_equation_label = QLabel("Reading GPU power limit...")
         self.gpu_power_equation_label.setObjectName("statusText")
         result.addWidget(self.gpu_power_equation_label)
         self.gpu_power_limit_badge = QLabel("-- W")
@@ -1373,6 +1382,8 @@ class FanControlWindow(QMainWindow):
         self._update_mode_panels()
         self._show_telemetry(result["telemetry"])
         self._show_backend_state(backend)
+        if "gpu_power" in result:
+            self._show_gpu_power(result["gpu_power"])
         if result["temperatures"] is not None:
             self._show_temperatures(result["temperatures"])
         elif result["temperature_error"]:
@@ -1399,6 +1410,8 @@ class FanControlWindow(QMainWindow):
                     self._show_temperatures(temperatures)
                 elif result["temperature_error"]:
                     self._show_temperature_error(result["temperature_error"])
+                else:
+                    self._show_gpu_thermal_throttling(None)
                 if "gpu_power" in result:
                     self._show_gpu_power(result["gpu_power"])
             except (KeyError, TypeError, ValueError) as exc:
@@ -1408,6 +1421,7 @@ class FanControlWindow(QMainWindow):
             self._workers.discard(worker)
             self._telemetry_inflight = False
             if not self._closing:
+                self._show_gpu_thermal_throttling(None)
                 self._set_status("Connected | Telemetry temporarily unavailable")
 
         worker.signals.completed.connect(complete)
@@ -1454,9 +1468,14 @@ class FanControlWindow(QMainWindow):
         self.cpu_temp_gauge.setToolTip(f"Source: {temperatures['cpu_source']}")
         self.gpu_temp_gauge.setToolTip(f"Source: {temperatures['gpu_source']}")
         self._update_power_draw(temperatures)
+        self._show_gpu_thermal_throttling(temperatures.get("gpu_sw_thermal_throttling"))
         self._set_fault("sensor", None)
 
+    def _show_gpu_thermal_throttling(self, active: Any) -> None:
+        self.gpu_thermal_warning.setVisible(active is True)
+
     def _show_temperature_error(self, error: str) -> None:
+        self._show_gpu_thermal_throttling(None)
         for gauge in (
             self.cpu_temp_gauge,
             self.gpu_temp_gauge,
@@ -1469,7 +1488,7 @@ class FanControlWindow(QMainWindow):
     def _set_fault(self, kind: str, message: str | None) -> None:
         # One warning line; the most important message wins.
         self._faults[kind] = message
-        for name in ("emergency", "sensor", "fan"):
+        for name in ("emergency", "sensor", "fan", "gpu_power", "lightbar"):
             if self._faults.get(name):
                 self.fault_label.setText(self._faults[name])
                 self.fault_label.show()
@@ -1487,8 +1506,22 @@ class FanControlWindow(QMainWindow):
         else:
             self.control_method_label.setText("Detecting control...")
         capabilities = backend.get("capabilities") or {}
-        self.lightbar_button.setEnabled(bool(capabilities.get("lightbar")))
+        self._lightbar_available = bool(capabilities.get("lightbar"))
+        self.lightbar_button.setEnabled(self._lightbar_available)
+        self.lightbar_button.setToolTip(
+            "Open the lightbar settings" if self._lightbar_available or self._linux
+            else "Stop GCUBridge to enable lightbar settings in Direct EC mode."
+        )
+        if not self._lightbar_available:
+            self.lightbar_window.stop_pending_apply()
+            if self.lightbar_window.isVisible():
+                self.lightbar_window.show_error(
+                    "Lightbar control is unavailable for the current control method"
+                )
+        self._set_fault("lightbar", backend.get("lightbar_error"))
+        self._set_fault("gpu_power", backend.get("gpu_power_error"))
         if not capabilities.get("gpu_power_limit"):
+            self._gpu_power_apply_timer.stop()
             self._gpu_power_available = False
             self._update_gpu_power_enabled()
         target = backend.get("auto_target")
@@ -1612,7 +1645,7 @@ class FanControlWindow(QMainWindow):
         self._update_gpu_power_text()
 
     def _schedule_gpu_power_apply(self) -> None:
-        if not self._gpu_power_available or self._busy:
+        if not self._gpu_power_available or self._busy or self.gpu_power_slider.isSliderDown():
             return
         step = GPU_POWER_STEP_WATTS
         rounded = min(
@@ -1624,7 +1657,7 @@ class FanControlWindow(QMainWindow):
         self._gpu_power_apply_timer.start()
 
     def apply_gpu_power(self) -> None:
-        if not self._gpu_power_available or self._busy:
+        if not self._gpu_power_available or self._busy or self.gpu_power_slider.isSliderDown():
             return
         offset = self.gpu_power_slider.value()
         if offset == self._gpu_power_applied:
@@ -1692,7 +1725,7 @@ class FanControlWindow(QMainWindow):
         self._load_lightbar()
 
     def _load_lightbar(self) -> None:
-        if self._closing or not self.lightbar_window.isVisible():
+        if self._closing or not self._lightbar_available or not self.lightbar_window.isVisible():
             return
         if self._busy:
             QTimer.singleShot(LIGHTBAR_RETRY_MS, self._load_lightbar)
@@ -1707,7 +1740,7 @@ class FanControlWindow(QMainWindow):
 
     def apply_lightbar(self) -> None:
         request = self.lightbar_window.requested_state()
-        if self._closing or request is None or request == self.lightbar_window.applied_state:
+        if self._closing or not self._lightbar_available or request is None or request == self.lightbar_window.applied_state:
             return
         if self._busy:
             # Keep the latest choice; it is sent once the current operation ends.
@@ -1812,7 +1845,10 @@ class FanControlWindow(QMainWindow):
         warning = False
         if not state.get("available"):
             equation = f"Unavailable: {state.get('error') or 'unknown error'}"
-            self._set_limit_badge("-- W", "warning", "The GPU power limit cannot be read")
+            self._set_limit_badge(
+                f"{enforced:.0f} W" if isinstance(enforced, (int, float)) else "-- W",
+                "warning", "Power limit the NVIDIA driver enforces now; control is unavailable",
+            )
             warning = True
         elif base is None:
             equation = f"Base + {offset} W sustained (base shown once the GPU wakes) ="
@@ -1842,10 +1878,10 @@ class FanControlWindow(QMainWindow):
                     "? W", "pending", "Waiting for NVIDIA to report the new limit"
                 )
             elif applied and isinstance(enforced, (int, float)):
-                if enforced + 1 < sustained:
+                if enforced + 1 < sustained or enforced > sustained + room + 1:
                     equation = f"{sustained:.0f} W requested, but NVIDIA enforces"
                     self._set_limit_badge(
-                        f"{enforced:.0f} W", "warning", "NVIDIA enforces less than requested"
+                        f"{enforced:.0f} W", "warning", "NVIDIA's enforced limit is outside the requested range"
                     )
                     warning = True
                 else:

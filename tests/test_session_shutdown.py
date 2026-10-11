@@ -296,7 +296,12 @@ class LightbarWindowTests(unittest.TestCase):
                 self.assertEqual(lightbar.requested_state(), ("off", (36, 20, 5)))
                 self.assertFalse(lightbar.color_sliders[0].isEnabled())
             lightbar.stop_pending_apply()
+            lightbar.schedule_apply(300)
             window._show_backend_state({"capabilities": {}})
             self.assertFalse(window.lightbar_button.isEnabled())
+            self.assertFalse(lightbar._apply_timer.isActive())
+            with patch.object(window, "_run") as run:
+                window.apply_lightbar()
+                run.assert_not_called()
             window._closing = True
             window.tray_icon.hide()

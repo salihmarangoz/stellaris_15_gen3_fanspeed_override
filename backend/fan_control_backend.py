@@ -12,6 +12,7 @@ from shared.fan_control_common import (
     AUTO_INTERVAL_SECONDS,
     DEFAULT_MAX_FAN_TEMP,
     DEFAULT_MIN_FAN_TEMP,
+    LIGHTBAR_MAINTENANCE_INTERVAL_SECONDS,
     SENSOR_STALE_TIMEOUT_SECONDS,
     SENSOR_WATCHDOG_INTERVAL_SECONDS,
     auto_target,
@@ -30,11 +31,12 @@ if os.name == "nt":
     import msvcrt
 
     from backend.fan_control_service import ControlCenterService as FanService
-    from backend.temperature_service import read_temperatures
+    from backend.temperature_service import read_power_draw, read_temperatures
 else:
     msvcrt = None
     from backend.linux_fan_service import LinuxFanService as FanService
     from backend.linux_sensors import read_temperatures
+    read_power_draw = None
 
 
 WINDOWS_CAPABILITIES = {
@@ -75,6 +77,9 @@ class BackendController:
         self._last_sensor_error: str | None = None
         self._sensor_emergency = False
         self._last_written_duties: tuple[int, int] | None = None
+        self._lightbar_thread: threading.Thread | None = None
+        self._lightbar_error: str | None = None
+        self._gpu_power_error: str | None = None
 
     def start(self, *, start_frontend: bool, monitor_frontend: bool = True) -> None:
         with self._sensor_status_lock:
@@ -83,6 +88,11 @@ class BackendController:
         threading.Thread(
             target=self._sensor_watchdog, name="sensor-watchdog", daemon=True
         ).start()
+        if callable(getattr(self._service, "maintain_lightbar", None)):
+            self._lightbar_thread = threading.Thread(
+                target=self._lightbar_loop, name="lightbar-maintenance", daemon=True
+            )
+            self._lightbar_thread.start()
         if monitor_frontend:
             threading.Thread(
                 target=self._frontend_watchdog,
@@ -95,7 +105,28 @@ class BackendController:
     def stop(self) -> None:
         self._stop_event.set()
         self._auto_wakeup.set()
+        if self._lightbar_thread is not None:
+            self._lightbar_thread.join()
         self._service.close(wait=True)
+
+    def _lightbar_loop(self) -> None:
+        while not self._stop_event.wait(LIGHTBAR_MAINTENANCE_INTERVAL_SECONDS):
+            try:
+                self._service.maintain_lightbar()
+                error = None
+            except Exception as exc:
+                error = str(exc)
+            with self._state_lock:
+                self._lightbar_error = error
+            maintain_gpu = getattr(self._service, "maintain_gpu_power", None)
+            if callable(maintain_gpu):
+                try:
+                    maintain_gpu()
+                    gpu_error = None
+                except Exception as exc:
+                    gpu_error = str(exc)
+                with self._state_lock:
+                    self._gpu_power_error = gpu_error
 
     def dispatch(self, command: str, arguments: dict[str, Any]) -> Any:
         if command not in {
@@ -115,8 +146,8 @@ class BackendController:
                 confirmed_low=bool(arguments.get("confirmed_low", False)),
             ),
             "set_boost": lambda: self.set_boost(bool(arguments["enabled"])),
-            "set_gpu_power": lambda: self.set_gpu_power(int(arguments["offset"])),
-            "set_dynamic_boost": lambda: self.set_dynamic_boost(bool(arguments["enabled"])),
+            "set_gpu_power": lambda: self.set_gpu_power(arguments["offset"]),
+            "set_dynamic_boost": lambda: self.set_dynamic_boost(arguments["enabled"]),
             "read_lightbar": self.read_lightbar,
             "set_lightbar": lambda: self.set_lightbar(
                 str(arguments["mode"]),
@@ -161,6 +192,8 @@ class BackendController:
                 "capabilities": self._capabilities(),
                 "sensor_emergency": self._sensor_emergency,
                 "sensor_error": self._sensor_error(),
+                "lightbar_error": self._lightbar_error,
+                "gpu_power_error": self._gpu_power_error,
             }
 
     def _sensor_error(self) -> str | None:
@@ -175,6 +208,14 @@ class BackendController:
         try:
             temperatures = self._read_validated_temperatures()
             result = asdict(temperatures)
+            if read_power_draw is not None:
+                # Extra display data cannot invalidate a successful sensor read.
+                try:
+                    result.update(read_power_draw())
+                except Exception:
+                    result["cpu_power_w"] = None
+                    result["gpu_power_w"] = None
+                    result["gpu_sw_thermal_throttling"] = None
             with self._state_lock:
                 self._last_temperatures = result
             return result, None
@@ -296,6 +337,9 @@ class BackendController:
                 "backend": self._snapshot(),
             }
         )
+        gpu_power_state = getattr(self._service, "gpu_power_state", None)
+        if callable(gpu_power_state):
+            result["gpu_power"] = gpu_power_state()
         return result
 
     def read_telemetry(self) -> dict[str, Any]:

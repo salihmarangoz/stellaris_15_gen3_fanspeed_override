@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from shared.fan_control_common import validate_lightbar
+
 
 OEM_HOST = "::1"
 OEM_PORT = 13688
@@ -32,6 +34,25 @@ FAN_CONTROL_MIRROR_ADDRESS = 0x07C5
 FAN_SUBSYSTEM_STATE_ADDRESS = 0x07C6
 CPU_DUTY_ADDRESS = 0x075B
 GPU_DUTY_ADDRESS = 0x075C
+CPU_FAN_RPM_ADDRESS = 0x0464
+GPU_FAN_RPM_ADDRESS = 0x046C
+MAX_PLAUSIBLE_RPM = 10000
+# cTGP on the exact Linux-validated board/BIOS. OEM 4.9 metadata names the same
+# four registers, but aliases them to fan PWM on other platforms.
+CTGP_CONTROL_ADDRESS = 0x0743
+CTGP_OFFSET_ADDRESS = 0x0744
+CTGP_TPP_ADDRESS = 0x0745
+CTGP_DB_ADDRESS = 0x0746
+CTGP_ADDRESSES = (CTGP_OFFSET_ADDRESS, CTGP_TPP_ADDRESS, CTGP_DB_ADDRESS, CTGP_CONTROL_ADDRESS)
+CTGP_GENERAL_ENABLE = 0x01
+CTGP_DB_ENABLE = 0x02
+CTGP_OFFSET_ENABLE = 0x04
+MAX_CTGP_OFFSET_WATTS = 50
+# Same laptop registers validated by the Linux implementation on AC power.
+LIGHTBAR_CONTROL_ADDRESS = 0x0748
+LIGHTBAR_RAINBOW = 0x80
+LIGHTBAR_COLOR_ADDRESSES = (0x0749, 0x074A, 0x074B)
+LIGHTBAR_ADDRESSES = LIGHTBAR_COLOR_ADDRESSES + (LIGHTBAR_CONTROL_ADDRESS,)
 CPU_TEMP_UP_ADDRESS = 0x0F00
 CPU_TEMP_DOWN_ADDRESS = 0x0F10
 CPU_TABLE_DUTY_ADDRESS = 0x0F20
@@ -87,6 +108,16 @@ def oem_broker_available(timeout: float = 0.2) -> bool:
             return True
     except OSError:
         return False
+
+
+def validate_ctgp_platform() -> None:
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\BIOS") as key:
+        values = tuple(winreg.QueryValueEx(key, name)[0] for name in
+                       ("BaseBoardProduct", "SystemSKU", "BIOSVersion"))
+    if values != ("GMxZGxx", "STELLARIS1XA03", "N.1.61A15"):
+        raise RuntimeError("GPU power control requires the validated Stellaris board, SKU, and BIOS")
 
 
 class DirectEcClient:
@@ -334,8 +365,121 @@ class DirectEcClient:
             # Live ramp values use the same half-percent unit but can be odd.
             "CpuFanDuty": cpu / 2,
             "GpuFanDuty": gpu / 2,
+            "CpuFanRpm": self._read_rpm(CPU_FAN_RPM_ADDRESS),
+            "GpuFanRpm": self._read_rpm(GPU_FAN_RPM_ADDRESS),
             "ControlMethod": self.method_name,
         }
+
+    def _read_rpm(self, address: int) -> int | None:
+        try:
+            rpm = (self._read(address) << 8) | self._read(address + 1)
+        except (OSError, RuntimeError):
+            return None
+        return rpm if rpm <= MAX_PLAUSIBLE_RPM else None
+
+    def _validate_ctgp_hardware(self) -> None:
+        validate_ctgp_platform()
+        if self._read(PROJECT_ID_ADDRESS) != EXPECTED_PROJECT_ID or not self._read(0x078E) & 0x40:
+            raise RuntimeError("The EC does not match the validated universal-control platform")
+
+    def read_ctgp_state(self) -> dict[str, Any]:
+        self._validate_ctgp_hardware()
+        control = self._read(CTGP_CONTROL_ADDRESS)
+        offset = self._read(CTGP_OFFSET_ADDRESS)
+        boost = self._read(CTGP_DB_ADDRESS)
+        if offset > MAX_CTGP_OFFSET_WATTS or boost > 25:
+            raise RuntimeError("The EC reported an unsupported GPU power configuration")
+        return {
+            "offset": offset if control & CTGP_GENERAL_ENABLE and control & CTGP_OFFSET_ENABLE else 0,
+            "dynamic_boost": bool(control & CTGP_GENERAL_ENABLE and control & CTGP_DB_ENABLE),
+            "dynamic_boost_w": boost,
+            "configured": bool(control & CTGP_GENERAL_ENABLE and control & CTGP_OFFSET_ENABLE
+                               and self._read(CTGP_TPP_ADDRESS) == 0xFF and boost == 25),
+        }
+
+    def write_ctgp(self, offset: int, dynamic_boost: bool) -> None:
+        if type(offset) is not int or not 0 <= offset <= MAX_CTGP_OFFSET_WATTS:
+            raise ValueError("The GPU power offset must be an integer from 0 to 50 W")
+        if type(dynamic_boost) is not bool:
+            raise ValueError("Dynamic Boost must be a boolean")
+        self._validate_ctgp_hardware()
+        if self._broker_available():
+            raise RuntimeError("Stop GCUBridge before changing GPU power")
+        self.read_ctgp_state()
+        previous = {address: self._read(address) for address in CTGP_ADDRESSES}
+        control = previous[CTGP_CONTROL_ADDRESS] | CTGP_GENERAL_ENABLE | CTGP_OFFSET_ENABLE
+        control = control | CTGP_DB_ENABLE if dynamic_boost else control & ~CTGP_DB_ENABLE
+        desired = dict(zip(CTGP_ADDRESSES, (offset, 0xFF, 25, control)))
+        written = []
+
+        def write(address: int, value: int) -> None:
+            if self._broker_available():
+                raise RuntimeError("OEM broker became available before the GPU power write")
+            self._write(address, value)
+
+        try:
+            # Data first, enable bits last. Do not touch fan/WhisperMode bytes.
+            for address, value in desired.items():
+                if previous[address] != value:
+                    written.append(address)
+                    write(address, value)
+            if any(self._read(address) != value for address, value in desired.items()):
+                raise RuntimeError("GPU power readback did not match the write")
+        except Exception as exc:
+            try:
+                for address in written:
+                    write(address, previous[address])
+            except Exception as rollback_error:
+                raise RuntimeError(f"{exc}; GPU power rollback could not complete: {rollback_error}") from exc
+            raise
+
+    def read_lightbar(self) -> dict[str, Any]:
+        control = self._read(LIGHTBAR_CONTROL_ADDRESS)
+        color = [self._read(address) for address in LIGHTBAR_COLOR_ADDRESSES]
+        mode = "rainbow" if control & LIGHTBAR_RAINBOW else "color" if any(color) else "off"
+        validate_lightbar(mode, color)
+        return {"mode": mode, "color": color}
+
+    def _write_lightbar_byte(self, address: int, value: int) -> None:
+        if self._broker_available():
+            raise RuntimeError("OEM broker became available before the lightbar write")
+        self._write(address, value)
+
+    def write_lightbar(
+        self, mode: str, color: tuple[int, int, int], *, force: bool = False
+    ) -> bool:
+        mode, color = validate_lightbar(mode, color)
+        if self._broker_available():
+            raise RuntimeError("Stop GCUBridge before changing the lightbar")
+        previous = {address: self._read(address) for address in LIGHTBAR_ADDRESSES}
+        validate_lightbar("color", [previous[address] for address in LIGHTBAR_COLOR_ADDRESSES])
+        control = previous[LIGHTBAR_CONTROL_ADDRESS]
+        if mode == "rainbow":
+            desired = {LIGHTBAR_CONTROL_ADDRESS: control | LIGHTBAR_RAINBOW}
+        else:
+            desired = dict(zip(LIGHTBAR_COLOR_ADDRESSES, color if mode == "color" else (0, 0, 0)))
+            desired[LIGHTBAR_CONTROL_ADDRESS] = control & ~LIGHTBAR_RAINBOW
+        changed = any(previous[address] != value for address, value in desired.items())
+        written: list[int] = []
+        try:
+            for address, value in desired.items():
+                if force or previous[address] != value:
+                    written.append(address)
+                    self._write_lightbar_byte(address, value)
+            if any(self._read(address) != value for address, value in desired.items()):
+                raise RuntimeError("Lightbar readback did not match the write")
+        except Exception as exc:
+            # If OEM ownership returned, stop all writes, including rollback.
+            # Otherwise restore colors before the animation bit.
+            try:
+                for address in written:
+                    self._write_lightbar_byte(address, previous[address])
+            except Exception as rollback_error:
+                raise RuntimeError(
+                    f"{exc}; lightbar rollback could not complete: {rollback_error}"
+                ) from exc
+            raise
+        return changed
 
     def set_curve(self, curve: dict[str, Any]) -> None:
         self._write_curve(curve, FAN_CONTROL_USER_HIGH)

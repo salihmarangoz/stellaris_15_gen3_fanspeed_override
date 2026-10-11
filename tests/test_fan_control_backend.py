@@ -21,6 +21,10 @@ from backend.direct_fan_control import (
     GPU_TEMP_DOWN_ADDRESS,
     GPU_TEMP_UP_ADDRESS,
     PROJECT_ID_ADDRESS,
+    CPU_FAN_RPM_ADDRESS,
+    GPU_FAN_RPM_ADDRESS,
+    LIGHTBAR_CONTROL_ADDRESS,
+    LIGHTBAR_COLOR_ADDRESSES,
     DirectEcClient,
 )
 from backend.fan_control_service import ControlCenterService
@@ -217,6 +221,8 @@ class DirectEcTests(unittest.TestCase):
             FAN_CONTROL_ADDRESS: FAN_CONTROL_USER_HIGH,
             FAN_CONTROL_MIRROR_ADDRESS: FAN_CONTROL_USER_HIGH,
             FAN_SUBSYSTEM_STATE_ADDRESS: 5,
+            LIGHTBAR_CONTROL_ADDRESS: 0x89,
+            **dict(zip(LIGHTBAR_COLOR_ADDRESSES, (12, 20, 3))),
         }
         for address in (
             CPU_TEMP_UP_ADDRESS,
@@ -253,6 +259,83 @@ class DirectEcTests(unittest.TestCase):
         memory[0x075C] = 149
         self.assertEqual(client.fan_info()["CpuFanDuty"], 65.5)
         self.assertEqual(client.fan_info()["GpuFanDuty"], 74.5)
+
+    def test_rpm_is_big_endian_and_optional(self) -> None:
+        client, memory, writes = self.make_client()
+        memory.update({CPU_FAN_RPM_ADDRESS: 0x08, CPU_FAN_RPM_ADDRESS + 1: 0x54,
+                       GPU_FAN_RPM_ADDRESS: 0, GPU_FAN_RPM_ADDRESS + 1: 0})
+        info = client.fan_info()
+        self.assertEqual(info["CpuFanRpm"], 2132)
+        self.assertEqual(info["GpuFanRpm"], 0)
+        memory[GPU_FAN_RPM_ADDRESS] = 0xFF
+        self.assertIsNone(client.fan_info()["GpuFanRpm"])
+        original = client._read_ec
+        def broken_rpm(address):
+            if address == CPU_FAN_RPM_ADDRESS:
+                raise OSError("RPM unavailable")
+            return original(address)
+        client._read_ec = broken_rpm
+        self.assertIsNone(client.fan_info()["CpuFanRpm"])
+        self.assertEqual(client.fan_info()["CpuFanDuty"], 50)
+        self.assertEqual(writes, [])
+
+    def test_lightbar_changes_only_colors_and_rainbow_bit(self) -> None:
+        client, memory, writes = self.make_client()
+        before = dict(memory)
+        self.assertEqual(client.read_lightbar()["mode"], "rainbow")
+        client.write_lightbar("color", (36, 10, 0))
+        self.assertEqual(client.read_lightbar(), {"mode": "color", "color": [36, 10, 0]})
+        self.assertEqual(memory[LIGHTBAR_CONTROL_ADDRESS], 0x09)
+        self.assertFalse(client.write_lightbar("color", (36, 10, 0)))
+        client.write_lightbar("rainbow", (1, 2, 3))
+        self.assertEqual(memory[LIGHTBAR_CONTROL_ADDRESS], 0x89)
+        self.assertEqual(client.read_lightbar()["color"], [36, 10, 0])
+        client.write_lightbar("off", (36, 10, 0))
+        self.assertEqual(client.read_lightbar(), {"mode": "off", "color": [0, 0, 0]})
+        allowed = set(LIGHTBAR_COLOR_ADDRESSES) | {LIGHTBAR_CONTROL_ADDRESS}
+        self.assertTrue(all(address in allowed for address, _ in writes))
+        self.assertEqual({k: v for k, v in memory.items() if k not in allowed},
+                         {k: v for k, v in before.items() if k not in allowed})
+
+    def test_lightbar_failed_readback_restores_previous_bytes(self) -> None:
+        client, memory, _ = self.make_client()
+        before = dict(memory)
+        original = client._read_ec
+        failed = False
+        def stale(address):
+            nonlocal failed
+            if address == LIGHTBAR_COLOR_ADDRESSES[0] and memory[address] == 36 and not failed:
+                failed = True
+                return 12
+            return original(address)
+        client._read_ec = stale
+        with self.assertRaisesRegex(RuntimeError, "readback"):
+            client.write_lightbar("color", (36, 10, 0))
+        self.assertEqual(memory, before)
+
+    def test_lightbar_refuses_bad_values_and_live_oem_broker(self) -> None:
+        client, memory, writes = self.make_client()
+        for mode, color in (("bad", (1, 2, 3)), ("color", (37, 2, 3)),
+                            ("off", (True, 0, 0)), ("color", (1, 2))):
+            with self.assertRaises(ValueError):
+                client.write_lightbar(mode, color)
+        client._broker_available = lambda: True
+        with self.assertRaisesRegex(RuntimeError, "GCUBridge"):
+            client.write_lightbar("off", (0, 0, 0))
+        self.assertEqual(writes, [])
+        client._broker_available = lambda: False
+        memory[LIGHTBAR_COLOR_ADDRESSES[0]] = 100
+        with self.assertRaises(ValueError):
+            client.write_lightbar("off", (0, 0, 0))
+        self.assertEqual(writes, [])
+
+    def test_lightbar_stops_writing_if_oem_returns_mid_operation(self) -> None:
+        client, memory, writes = self.make_client()
+        client._broker_available = lambda: len(writes) >= 1
+        with self.assertRaisesRegex(RuntimeError, "rollback could not complete"):
+            client.write_lightbar("color", (36, 10, 0))
+        self.assertEqual(writes, [(LIGHTBAR_COLOR_ADDRESSES[0], 36)])
+        self.assertEqual(memory[LIGHTBAR_CONTROL_ADDRESS], 0x89)
 
     def test_direct_write_encodes_both_complete_tables_and_verifies(self) -> None:
         client, memory, writes = self.make_client()

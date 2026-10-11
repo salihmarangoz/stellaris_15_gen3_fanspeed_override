@@ -23,6 +23,7 @@ if (-not (Test-Path -LiteralPath $python)) {
 
 & (Join-Path $PSScriptRoot 'setup_pawnio.ps1') -SkipDriverInstall:$SkipDriverInstall
 
+$originalBuildPath = $env:Path
 Push-Location $root
 try {
     foreach ($legacyExecutable in $legacyExecutables) {
@@ -38,6 +39,19 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Dependency installation failed with exit code $LASTEXITCODE"
     }
+    # Resolve DLLs only from Python, its packages, and Windows. Other PATH
+    # tools can ship an incompatible icuuc.dll or OpenSSL with the same name.
+    $pythonBaseDirectory = & $python -c 'import sys; print(sys.base_prefix)'
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not determine the Python runtime directory.'
+    }
+    $env:Path = @(
+        (Split-Path -Parent $python),
+        $pythonBaseDirectory,
+        (Join-Path $pythonBaseDirectory 'DLLs'),
+        (Join-Path $env:SystemRoot 'System32'),
+        $env:SystemRoot
+    ) -join ';'
     & $python -m PyInstaller `
         --noconfirm `
         --clean `
@@ -56,6 +70,7 @@ try {
     }
 }
 finally {
+    $env:Path = $originalBuildPath
     Pop-Location
 }
 

@@ -310,12 +310,14 @@ class LinuxSensorTests(unittest.TestCase):
         (hwmon / "name").write_text("k10temp\n")
         (hwmon / "temp1_label").write_text("Tctl\n")
         (hwmon / "temp1_input").write_text("54500\n")
-        gpu = root / "bus" / "pci" / "devices" / "0000:01:00.0"
+        # Discovery uses vendor/class files, so fixture names can avoid colons
+        # that Windows forbids while retaining the same sensor coverage.
+        gpu = root / "bus" / "pci" / "devices" / "0000_01_00.0"
         (gpu / "power").mkdir(parents=True)
         (gpu / "vendor").write_text("0x10de\n")
         (gpu / "class").write_text("0x030000\n")
         (gpu / "power" / "runtime_status").write_text(runtime + "\n")
-        audio = root / "bus" / "pci" / "devices" / "0000:01:00.1"
+        audio = root / "bus" / "pci" / "devices" / "0000_01_00.1"
         audio.mkdir(parents=True)
         (audio / "vendor").write_text("0x10de\n")
         (audio / "class").write_text("0x040300\n")

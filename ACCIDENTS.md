@@ -2,6 +2,24 @@
 
 This is the factual log of important failures or harmful behavior encountered by this project or the target system. Every entry must have a timestamp, title, problem, outcomes, and solution. When the actual incident time is unknown, the entry must say so and use the earliest recorded remediation timestamp instead of inventing a time. Design risks and unconfirmed possibilities belong in `TODO.md`.
 
+## 2026-10-11T03:33:27+03:00 - Local Windows update fails to load QtCore
+
+Actual occurrence time: unknown. The timestamp records diagnosis following the user's failed-launch report.
+
+### Problem
+
+PyInstaller resolved `icuuc.dll` from the build environment's unrelated Poppler PATH directory. That ICU 78 library exports version-suffixed symbols, while the bundled Qt6Core requires the Windows ICU API including the unsuffixed `ucnv_open`. Source Qt imports worked, but the installed executable raised an ImportError before creating its controller. Loading the extracted Qt6Core reproduced a Windows entry-point error naming `ucnv_open`.
+
+### Outcomes
+
+The updated application could not start. The failed launch did not construct a controller or issue fan writes. The user's previous executable and settings were backed up, and installation preserved the settings. Hardware fan speed during the interruption was not measured.
+
+### Solution
+
+Restrict DLL discovery to the selected Python runtime, virtual environment, and Windows directories during packaging, then restore the caller's PATH. Add `--check-qt` to exercise actual frozen Qt imports and an offscreen window/event loop without importing hardware backends. Cover the no-backend property with a subprocess regression test, rebuild, check the executable, and replace the installed copy.
+
+The corrected executable passed `--check-qt` with exit code 0 and was installed with matching SHA-256 and unchanged preferences. Its normal window displayed valid temperatures, GPU power, and fan RPM; Automatic updates resumed. A second executable launch exited with code 0 and retained the same original process IDs and window. The offscreen source suite passed 85 tests with two Linux-only skips. No lightbar mode was selected or tested.
+
 ## 2026-09-27T01:14:30+03:00 - Release v1.0.0 crashes during Qt startup
 
 Actual occurrence time: unknown. The timestamp records investigation after the user's traceback report.

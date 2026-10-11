@@ -10,21 +10,43 @@ The owner decided on 2026-09-29 that both fans go to 100% when no valid CPU or G
 
 The 2026-09-29 Linux work changed shared code that has not run on Windows hardware: the controller now selects its service and sensors by platform, imports `msvcrt` conditionally, runs the sensor watchdog, reports capabilities, guards the Auto thread, and authorizes requests through the server class. The loopback client error text changed from "not responding" to "not available" when connecting fails. The GUI gained the grayed GPU power row, RPM/power details, tighter spacing, and a guarded completion handler. Run the Windows CI, build and install the package, and verify startup, tray, Exit at 100%, session shutdown, GCUBridge switching, Manual writes, Boost, and Automatic mode on the laptop.
 
+On 2026-10-11 the rebuilt installed application passed its packaged Qt check, opened normally, displayed live temperatures/GPU power/RPM, and resumed Automatic updates. A second executable launch retained the original process IDs and activated its window. This closes the basic launch/display checks only; the remaining mode, recovery, tray, shutdown, and hardware validation listed above is still pending.
+
+The subsequent power-control update also passed its bundled Qt check, installed with unchanged frontend preferences, and displayed live CPU package watts (6.5-6.9 W), an active GPU slider with NVIDIA's 115 W limit, and matching 45% live fan duties after settling. A second launch again retained both existing process IDs. The explicitly authorized 115/130/165 W GPU-limit test is recorded below; no extra fan-mode or shutdown tests were performed at that stage. The subsequent authorized GPU stress result is recorded below.
+
+The subsequent GPU-slider fix passed 14 focused tests, including a real Qt timer/drag regression with a mocked backend. The rebuilt installed executable passed its bundled Qt check and second-launch singleton check, retained the frontend preferences, and displayed live temperatures, watts and matching Automatic fan duties. No GPU stress worker remained. The slider now cancels pending updates on press and refuses application until release.
+
 ## HIGH - Run the new shared tests on Windows CI
 
 `tests/test_linux_backend.py` runs on Windows except its Unix-socket and service-settings classes. Confirm that the fake-EC, sensor, controller-safety, and Linux service tests pass on the Windows runner, and fix any path or platform assumption they expose.
 
-## MEDIUM - Show CPU and GPU power draw and fan RPM on Windows
+Local Windows verification on 2026-10-11 found three sensor-test fixture failures because PCI directory names contained colons. The fixture now uses portable names; discovery still checks vendor/class files. With Windows telemetry/lightbar, CPU RAPL, GPU-control, and Qt-check coverage included, source compilation and the offscreen suite pass locally: 107 tests passed and the two Linux-only tests were skipped. Windows CI and remaining target-hardware validation remain pending.
 
-The GUI shows power and RPM details only when the backend reports them. On Windows, add GPU `power.draw` to a separate `nvidia-smi` query (do not change the fail-closed temperature parse), CPU package power through the PawnIO AMD module if it allows the RAPL energy MSR, and fan RPM from EC `0x0464`/`0x046C` in the direct path. Validate each value against the Linux readings on the same laptop.
+## HIGH - Validate Windows GPU power, fan RPM, and lightbar on target hardware
+
+Implemented on 2026-10-11 with mocked/offscreen coverage. The installed Windows GUI subsequently displayed plausible GPU power and fan RPM, but these were not independently compared. Compare the optional GPU `power.draw` and Direct EC RPM (`0x0464`/`0x046C`) with independent readings on the laptop. With explicit authorization for live writes, verify Color/Rainbow/Off, unrelated-bit preservation, saved-color restoration after restart/resume, and refusal while GCUBridge runs or returns during a lightbar operation. Test on AC power and battery; the unvalidated battery-mode lightbar copy remains untouched. Confirm lightbar maintenance does not delay Auto, sensor-loss Boost, or full-speed exit. Hardware validation remains pending.
+
+## MEDIUM - Compare Windows CPU package power with Linux RAPL
+
+Implemented on 2026-10-11 with the unchanged pinned PawnIO module, read-only unit/counter MSRs, isolated optional telemetry, and mocked sampling/transport coverage. Six read-only samples on the target laptop accepted units `0xA1003` (energy exponent 16) and reported about 6.5-6.9 W after the initial unavailable sample. Compare the average package power with Linux RAPL on the same laptop under idle and load; verify the display after sleep/resume. Do not change the module pin or add another hardware-access fallback.
 
 ## MEDIUM - Decide whether Windows should stop writing whole control bytes
 
 Windows direct EC writes the OEM-traced bytes `0x0741=1`, `0x0751` and `0x07C5` equal to the mode, and `0x07C6=5`. `0x07C5` bit 5 is the firmware's WhisperMode flag forwarded to the NVIDIA driver, and Boost clears the split-table bit 7. Linux uses bit-level writes. Compare the OEM Control Center's own writes and decide, with a Windows hardware test, whether Windows should adopt the Linux semantics.
 
-## LOW - Add the GPU power limit on Windows
+## HIGH - Validate Windows Dynamic Boost, GPU load, and saved-choice recovery
 
-The cTGP control is Linux-only and grayed out on Windows. A Windows version would write `0x0743`-`0x0746` through the direct path and must refuse while the OEM broker runs, because Control Center manages the same registers.
+Implemented on 2026-10-11 using the existing pinned DLL, Linux-validated cTGP encoding, exact board/SKU/BIOS and EC gates, readable VBIOS limits, readback/rollback, OEM refusal before every write, saved user choices, and mocked tests. The owner explicitly authorized 115/130/165 W tests; with Fan Control stopped, NVIDIA followed all three, Dynamic Boost off, no stress load. All four EC bytes were restored to zero and verified; NVIDIA afterwards reported 115 W instead of the pre-test 120 W, so investigate driver-limit restoration separately. The downloaded 4.9.47.13 OEM package confirms register names statically, but protected method bodies leave additional NVIDIA calls unresolved. With authorization for further hardware tests, validate Dynamic Boost on/off, sustained power near the selected ceiling and longer thermal behavior, saved-choice repair after resume/restart, and refusal if OEM ownership returns. Do not change `0x07C5` or invoke private NVIDIA Whisper setters based on this evidence.
+
+An authorized 60-second GPU-only CUDA load on 2026-10-11 maintained 98-99% utilization after startup. While the owner changed the slider, NVIDIA samples showed limits from 115 to 155 W, then 165 W during cooldown. Peak sampled GPU draw was 112.95 W, GPU temperature 63 C, CPU temperature 57 C, and both fan duties reached 75%. The load ended normally without a temperature abort. This workload did not reach the selected power ceiling and does not validate sustained 165 W draw or long-duration thermal stability.
+
+## HIGH - Investigate Windows GPU software thermal capping under load
+
+A subsequent authorized FurMark 2.10.2 OpenGL test on 2026-10-11 ran on the RTX 3080 Laptop GPU for 60007 ms at 1920x1080, ending normally. The owner changed the limit during the test: sampled NVIDIA limits were 145, 160 and 165 W, so this was not a fixed 155 W run. At 160 W the driver reported up to 159.68 W average draw and 161.09 W instantaneous draw with software power capping active; at 145 W it initially drew about 144.5 W. Peak sampled GPU/CPU temperatures were 65/58.75 C, and both fan duties reached 80%. Software thermal capping became active at a reported core temperature of 59 C and later reduced draw to roughly 96-101 W and graphics clocks to about 1065-1080 MHz, even with a 165 W limit. Hardware thermal and external power-brake flags were inactive. Memory temperature and T.Limit were unavailable; the post-test driver reported an 87 C target and 105 C maximum operating temperature. The source of software thermal capping is unresolved, and sustained ceiling power is not validated.
+
+A later run configured for 300 seconds exited normally after 176162 ms; no monitor temperature abort occurred, and the reason for early normal exit was not established. It does not count as a completed five-minute test. Selected limits changed between 115/140/145/165 W; peak sampled draw reached 164.83 W, GPU temperature 72 C and CPU temperature 65.875 C. The final loaded sample drew 139.4 W at a 140 W limit with software power capping active and software/hardware thermal and power-brake flags inactive. Both fan duties reached 100%. This confirms transient 165 W operation and later near-ceiling 140 W operation, without establishing the earlier software thermal-cap cause. Its reports are under `build/qa/furmark-stress-20261011-042915`.
+
+Reports, CSV samples and FurMark logs are under `build/qa/furmark-stress-20261011-042507`. NVIDIA documents software thermal capping as potentially involving GPU or memory temperature; unavailable memory telemetry prevents assigning a cause from the core reading alone. Compare supported read-only thermal telemetry and platform policy under a fixed-limit repeat before changing any OEM/WhisperMode register or protection threshold. Do not bypass thermal protections.
 
 ## HIGH - Validate Linux after removing TUXEDO
 
@@ -41,10 +63,6 @@ The switch clears or sets EC `0x0743` bit 1 like TUXEDO's `db_enable`, but its e
 ## MEDIUM - Validate the lightbar on battery, after suspend, and after reboot
 
 The lightbar registers (`0x0748` bit 7, `0x0749`-`0x074B`) were validated live only on AC power. The mainline driver also writes a battery-mode copy at `0x07E2`-`0x07E5` (all zero on 2026-09-29), which the service leaves alone. Unplug the charger and confirm whether the chosen color, rainbow, and off stay the same; if the lightbar changes, validate and add the battery copy. Also confirm that the choice returns within about 15 seconds after reboot and immediately after resume, whether the lightbar ever forgets its state without the bytes changing (the reason for the 15-minute rewrite), and what the EC shows while suspended (`0x0748` bit 3 is clear, which the mainline driver describes as the suspend breathing animation).
-
-## LOW - Add lightbar control on Windows
-
-The Lightbar button is grayed out on Windows. A Windows version would write the same registers through the direct EC path and must not fight the OEM Control Center, which may manage the lightbar itself.
 
 ## LOW - Defer to a kernel lightbar driver if one appears
 

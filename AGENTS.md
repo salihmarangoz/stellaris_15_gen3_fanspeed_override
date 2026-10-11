@@ -18,8 +18,10 @@ This repository contains experimental, hardware-specific fan control for a Stell
 - Preserve the OEM Fan Boost control as the immediate 100% fallback.
 - Linux direct EC access must stay gated by the DMI board/SKU, the pinned DSDT SHA-256, EC project ID `0x10`, and `0x078E` bit 6. It may write only `0x0741` bit 0, `0x0751` (`0xA0` normal, `0x40` Boost), `0x07C5` bit 7, `0x07C6` bit 2, the tables `0x0F00`-`0x0F5F`, cTGP `0x0743`-`0x0746`, and the lightbar (`0x0748` bit 7, colors `0x0749`-`0x074B` at 0-36 each). Keep read-modify-write for bit fields, tables-before-enable-bits order, readback verification, rollback, and the refusal while `tccd` runs.
 - Linux writes the same duty to all 16 zones of each table so the unreliable EC temperature cannot change the fan speed.
-- The GPU power limit (cTGP offset) and the Dynamic Boost switch (`0x0743` bit 1) are Linux-only; the offset is limited to 0-50 W above the 115 W base and to the VBIOS maximum. The Windows GUI shows them disabled. NVIDIA applies them only while `nvidia-powerd` runs.
-- Lightbar control is Linux-only and grayed out on Windows. The service writes it only when the user chose a mode, leaves the other `0x0748` bits alone, and never touches the unvalidated battery-mode copy at `0x07E2`-`0x07E5`.
+- The GPU power limit (cTGP offset) and Dynamic Boost switch (`0x0743` bit 1) are limited to 0-50 W above the validated 115 W base and to the VBIOS maximum. Linux requires `nvidia-powerd`. Windows Direct EC additionally requires the exact board/SKU/BIOS, EC project and universal-control flag, the pinned OEM DLL, readable valid NVIDIA limits, and no OEM broker. Preserve other control bits, write data before enable bits, verify readback, and refuse every write/rollback byte while the broker runs. No Windows GPU writes happen until a user has chosen a setting; persist that choice and repair drift every 15 seconds. Do not touch fan/WhisperMode bytes or use private NVIDIA setters. Authorized live tests on 2026-10-11 confirmed NVIDIA enforced 115, 130, and 165 W with Dynamic Boost off. A later authorized 60-second GPU-only load reached 98-99% utilization, 112.95 W and 63 C. A subsequent 60-second FurMark run reached 159.68 W at a 160 W limit, but later NVIDIA software thermal capping reduced draw to about 100 W while the core read 59-65 C; the cause remains unresolved and must not be bypassed. Dynamic Boost switching, sustained full-ceiling load, and saved-choice recovery remain unvalidated; routine tests must remain mocked.
+- Lightbar control uses `0x0748` bit 7 and `0x0749`-`0x074B` on Linux and Windows Direct EC. On Windows it must refuse while the OEM broker runs, including before every write and rollback byte. The service writes it only when the user chose a mode, leaves the other `0x0748` bits alone, verifies writes and rolls back failures, and never touches the unvalidated battery-mode copy at `0x07E2`-`0x07E5`. Windows RPM and lightbar behavior still require target-hardware validation.
+- NVIDIA software thermal throttling is optional display telemetry, read together with GPU watts. Show the header warning only for an explicit active flag, and clear it on inactive/unknown/failed telemetry. Never use this flag as an Auto temperature input or change thermal protections because of it.
+- Windows power draw is optional display telemetry. GPU watts use a separate, bounded NVIDIA query; CPU package watts use energy deltas from the unchanged pinned PawnIO module's read-only MSRs `0xC0010299` and `0xC001029B`. Neither may invalidate temperatures or participate in Automatic control. Keep the first CPU sample unavailable, serialize sampling, handle 32-bit wrap, and reset after failures or long gaps. Never call a PawnIO write operation.
 
 ## Architecture
 
@@ -28,7 +30,8 @@ This repository contains experimental, hardware-specific fan control for a Stell
 - `backend/temperature_service.py`: independent CPU/GPU temperature acquisition. It must not import or query the Control Center service.
 - `backend/fan_control_backend.py`: PySide-free backend process, automatic control scheduler, IPC server, and frontend watchdog.
 - `shared/fan_control_ipc.py`: authenticated loopback IPC client plus process launch and 60-second restart-cooldown helpers.
-- `shared/fan_control_common.py`: pure automatic-curve constants and calculation shared by the two processes.
+- `shared/fan_control_common.py`: pure automatic-curve calculation and lightbar validation shared by both platforms.
+- `backend/direct_fan_control.py`: validated Windows OEM DLL access, fan tables, optional RPM telemetry, and gated, verified cTGP/lightbar writes.
 - `frontend/fan_control_gui.py`: PySide6 frontend, display timers, worker lifecycle, backend watchdog, and single-GUI enforcement.
 - `frontend/stellaris15gen3.css`: the complete frontend stylesheet.
 - `stellaris15gen3.py`: elevated single-process packaged entry point with an in-process controller client.
@@ -89,6 +92,8 @@ powershell.exe -ExecutionPolicy Bypass -File .\scripts\build_exe.ps1
 ```
 
 After packaging, verify that the window opens, remains responsive, and a second launch activates the existing instance. Do not select Auto during packaging smoke tests unless a live fan write was explicitly authorized.
+
+Run the packaged `--check-qt` switch before installing or launching a rebuilt executable. It exercises the Qt DLLs and offscreen plugin without importing hardware backends. Keep the build script's restricted DLL-discovery PATH; unrelated tool directories can contribute incompatible ICU/OpenSSL binaries.
 
 On Linux, use the ignored `.venv` in the repository and run the same mocked suites:
 

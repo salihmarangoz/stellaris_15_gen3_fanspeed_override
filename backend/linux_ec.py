@@ -7,6 +7,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
+from shared.fan_control_common import LIGHTBAR_MODES, MAX_LIGHTBAR_LEVEL, validate_lightbar
+
 
 EXPECTED_BOARD_NAME = "GMxZGxx"
 EXPECTED_PRODUCT_SKU = "STELLARIS1XA03"
@@ -60,8 +62,6 @@ LIGHTBAR_RAINBOW = 0x80
 LIGHTBAR_RED_ADDRESS = 0x0749
 LIGHTBAR_GREEN_ADDRESS = 0x074A
 LIGHTBAR_BLUE_ADDRESS = 0x074B
-MAX_LIGHTBAR_LEVEL = 36
-LIGHTBAR_MODES = ("color", "rainbow", "off")
 
 TABLE_POINT_COUNT = 16
 CPU_TEMP_END_ADDRESS = 0x0F00
@@ -208,25 +208,6 @@ def decode_duty(raw: int) -> int:
     if raw == FAN_OFF_RAW_DUTY:
         return 0
     return min(100, raw // 2)
-
-
-def validate_lightbar(mode: Any, color: Any) -> tuple[str, tuple[int, int, int]]:
-    if mode not in LIGHTBAR_MODES:
-        raise ValueError(f"The lightbar mode must be one of {', '.join(LIGHTBAR_MODES)}")
-    try:
-        levels = tuple(color)
-    except TypeError:
-        raise ValueError("The lightbar color must be three levels") from None
-    if len(levels) != 3 or any(
-        isinstance(level, bool)
-        or not isinstance(level, int)
-        or not 0 <= level <= MAX_LIGHTBAR_LEVEL
-        for level in levels
-    ):
-        raise ValueError(
-            f"The lightbar color must be three integers from 0 to {MAX_LIGHTBAR_LEVEL}"
-        )
-    return mode, (levels[0], levels[1], levels[2])
 
 
 class LinuxEcClient:

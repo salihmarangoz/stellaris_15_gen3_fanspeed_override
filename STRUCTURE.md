@@ -2,7 +2,7 @@
 
 This file is the living map of source files, generated paths, runtime data, and dependency boundaries. Update it whenever a file moves, a new subsystem is introduced, or a generated/runtime path changes.
 
-Last reviewed: 2026-09-29
+Last reviewed: 2026-10-11
 
 ## Repository files
 
@@ -34,10 +34,10 @@ Last reviewed: 2026-09-29
 |-- backend\
 |   |-- __init__.py              backend package marker
 |   |-- fan_control_backend.py   elevated scheduler, IPC server, watchdog
-|   |-- temperature_service.py   independent Ryzen and NVIDIA temperature reads
-|   |-- fan_control_service.py   serialized singleton and control-method selector
+|   |-- temperature_service.py   independent Ryzen/NVIDIA temperatures and optional CPU/GPU power
+|   |-- fan_control_service.py   serialized singleton, control-method selector, GPU/lightbar settings
 |   |-- fan_control.py           low-level MQTT, curves, backup/restore CLI
-|   |-- direct_fan_control.py    validated direct Uniwill EC fan-table access
+|   |-- direct_fan_control.py    validated Uniwill EC fan tables, RPM, cTGP, and lightbar access
 |   |-- fan_control_probe.py     read-only MQTT diagnostic utility
 |   |-- linux_ec.py              Linux EC window, platform gates, verified table/cTGP/lightbar writes
 |   |-- linux_sensors.py         Linux k10temp, NVIDIA, and RAPL readings
@@ -47,13 +47,17 @@ Last reviewed: 2026-09-29
 |   `-- requirements.txt         Windows backend runtime dependencies
 |-- shared\
 |   |-- __init__.py              shared package marker
-|   |-- fan_control_common.py    pure automatic-curve constants and calculation
+|   |-- fan_control_common.py    pure automatic curve and shared lightbar validation
 |   `-- fan_control_ipc.py       IPC, endpoint, and privilege-aware launches
 |-- tests\
 |   |-- __init__.py              test package marker
 |   |-- test_fan_control_backend.py
 |                                pure/mocked backend, safety, and IPC tests
 |   |-- test_session_shutdown.py real Qt startup, mocked shutdown/mode, and lightbar window tests
+|   |-- test_windows_telemetry.py optional GPU power, lightbar settings, and OEM exclusion tests
+|   |-- test_windows_cpu_power.py AMD RAPL sampling, read restrictions, and PawnIO cleanup tests
+|   |-- test_windows_gpu_power.py cTGP gates, NVIDIA limits, verified writes, OEM refusal, persistence
+|   |-- test_packaged_startup.py real Qt check that must not import hardware backends
 |   `-- test_linux_backend.py    fake-EC/sysfs Linux client, sensor, safety, and IPC tests
 |-- scripts\
 |   |-- launch_fan_control.ps1   source setup and normal-user launcher
@@ -105,7 +109,7 @@ stellaris15gen3_linux_service.py -> backend/linux_backend.py
 
 `backend/fan_control_backend.py` selects `ControlCenterService` and `temperature_service` on Windows and `LinuxFanService` and `linux_sensors` elsewhere at import time. The Linux service imports only the Python standard library, so it runs with the system Python; PySide6 is needed only by the GUI environment. Linux modules must not import `backend/fan_control.py` (paho-mqtt) or any Windows-only module.
 
-`backend/temperature_service.py` must remain independent of `backend/fan_control_service.py` and both fan-control methods. `frontend/fan_control_gui.py` must not import the `backend` package. `shared/fan_control_common.py` stays pure so curve behavior can be tested without Qt, MQTT, PawnIO, NVIDIA, or administrator access. Shared code must not import either process package.
+`backend/temperature_service.py` must remain independent of `backend/fan_control_service.py` and both fan-control methods. Its optional Windows CPU/GPU power readings and NVIDIA software thermal-throttling flag are used only for display snapshots. The throttling flag shares the bounded GPU power query and drives only the amber GUI icon beside the control-method badge. `frontend/fan_control_gui.py` must not import the `backend` package. `shared/fan_control_common.py` stays pure so curve behavior and lightbar validation can be tested without Qt, MQTT, PawnIO, NVIDIA, or administrator access. Shared code must not import either process package. Windows and Linux direct EC clients both use the shared lightbar validation without importing each other.
 
 ## Runtime paths
 
@@ -114,10 +118,18 @@ stellaris15gen3_linux_service.py -> backend/linux_backend.py
 |-- backend-endpoint.json    loopback address and random IPC token
 |-- backend.lock             process-wide backend singleton lock
 |-- last-oem-curve.json      last complete OEM curve for direct failover
+|-- lightbar.json            backend-owned Windows lightbar mode and last RGB choice
+|-- gpu-power.json           backend-owned Windows cTGP offset and Dynamic Boost choice
 `-- fan-backups\             backups created by packaged writes
 ```
 
 Source-mode backups and `last-oem-curve.json` are written to `fan-backups\` in the repository. The endpoint file is replaced atomically when a backend starts and removed only when that same backend shuts down normally.
+
+Windows `lightbar.json` uses the LocalAppData path in both source and packaged runs. Missing or invalid settings cause no lightbar write. The backend maintenance thread is independent of the GUI and uses the existing serialized service and EC client.
+
+Windows `gpu-power.json` uses the same directory. Missing or invalid settings cause no GPU power write. GPU maintenance shares the existing peripheral maintenance thread, handles its errors separately from the lightbar, and uses the one serialized service/client. NVIDIA power-limit queries stay in `temperature_service.py` without creating a reverse dependency on control modules. Static OEM extraction, decompiler output, and read-only probes live under ignored `build/oem-analysis` and `build/qa`.
+
+`stellaris15gen3.py --check-qt` imports the frontend and exercises an offscreen Qt window/event loop before importing any backend. The same switch in the packaged executable checks its actual bundled DLLs without starting fan control. `scripts/build_exe.ps1` restricts DLL discovery to Python and Windows directories during packaging and restores the caller's PATH afterwards.
 
 Packaged user selections are stored as `StellarisFanControl.json` beside `StellarisFanControl.exe`. Source mode uses the ignored repository-root file of the same name.
 
@@ -147,6 +159,8 @@ Linux runtime paths:
 `STELLARIS15GEN3_SOCKET`, `STELLARIS15GEN3_STATE_DIR`, and `STELLARIS15GEN3_CONFIG` override these paths for tests and source runs.
 
 ## Generated and local-only paths
+
+One-off Windows GPU diagnostics live in `build\qa\windows_gpu_stress.py` and `build\qa\windows_furmark_stress.py`; the latter uses a hash-verified portable FurMark under `build\qa\furmark` and stores CSV, JSON and renderer logs in `build\qa\furmark-stress-*`. Timestamped `build\qa\gpu-stress-*` directories hold the CUDA ready/stop markers, worker log, JSON report and CSV samples. CUDA runs are bounded to 60 seconds; FurMark accepts 1-300 seconds, with a process deadline 15 seconds beyond the requested duration. Both monitors use existing read-only sensor paths and temperature aborts. They are local validation artifacts, not an application feature or dependency.
 
 The following are ignored and must not be committed:
 

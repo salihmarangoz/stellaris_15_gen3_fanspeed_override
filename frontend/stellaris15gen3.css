@@ -36,6 +36,13 @@ QLabel#warningText {
     font-size: 12px;
 }
 
+QLabel#thermalThrottleWarning {
+    color: #e4b45d;
+    font-size: 24px;
+    font-weight: 700;
+    padding: 0px 2px;
+}
+
 QLabel#methodBadge {
     color: #9de8d5;
     background: #203a34;
