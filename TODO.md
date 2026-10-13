@@ -16,11 +16,7 @@ The subsequent power-control update also passed its bundled Qt check, installed 
 
 The subsequent GPU-slider fix passed 14 focused tests, including a real Qt timer/drag regression with a mocked backend. The rebuilt installed executable passed its bundled Qt check and second-launch singleton check, retained the frontend preferences, and displayed live temperatures, watts and matching Automatic fan duties. No GPU stress worker remained. The slider now cancels pending updates on press and refuses application until release.
 
-## HIGH - Run the new shared tests on Windows CI
-
-`tests/test_linux_backend.py` runs on Windows except its Unix-socket and service-settings classes. Confirm that the fake-EC, sensor, controller-safety, and Linux service tests pass on the Windows runner, and fix any path or platform assumption they expose.
-
-Local Windows verification on 2026-10-11 found three sensor-test fixture failures because PCI directory names contained colons. The fixture now uses portable names; discovery still checks vendor/class files. With Windows telemetry/lightbar, CPU RAPL, GPU-control, and Qt-check coverage included, source compilation and the offscreen suite pass locally: 107 tests passed and the two Linux-only tests were skipped. Windows CI and remaining target-hardware validation remain pending.
+The v1.1.0 Windows CI build on 2026-10-13 passed all 118 mocked tests, skipping only the two Linux-only service classes (run 38328638470). The on-laptop checks above remain pending.
 
 ## HIGH - Validate Windows GPU power, fan RPM, and lightbar on target hardware
 
