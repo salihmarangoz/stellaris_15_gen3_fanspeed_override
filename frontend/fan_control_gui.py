@@ -888,6 +888,10 @@ class FanControlWindow(QMainWindow):
         result.setSpacing(10)
         self.gpu_power_equation_label = QLabel("Reading GPU power limit...")
         self.gpu_power_equation_label.setObjectName("statusText")
+        self.gpu_power_equation_label.setToolTip(
+            "NVIDIA adds Dynamic Boost only while the GPU is busy and the CPU has power to spare, "
+            "so the boost reads 0 W when the GPU is idle"
+        )
         result.addWidget(self.gpu_power_equation_label)
         self.gpu_power_limit_badge = QLabel("-- W")
         self.gpu_power_limit_badge.setObjectName("limitBadgePending")
@@ -1889,10 +1893,13 @@ class FanControlWindow(QMainWindow):
                     )
                     warning = True
                 else:
-                    # The boost term is what NVIDIA actually adds right now.
-                    equation = (
-                        f"{sustained:.0f} W sustained + {enforced - sustained:.0f} W boost ="
+                    # The boost term is what NVIDIA actually adds right now. It grants
+                    # Dynamic Boost only under GPU load, so show the available room too.
+                    boost_now = max(0.0, enforced - sustained)
+                    boost_text = (
+                        f"{boost_now:.0f} of {room:.0f} W boost" if room > 0 else f"{boost_now:.0f} W boost"
                     )
+                    equation = f"{sustained:.0f} W sustained + {boost_text} ="
                     self._set_limit_badge(
                         f"{enforced:.0f} W", "ok", "Power limit the NVIDIA driver enforces now"
                     )

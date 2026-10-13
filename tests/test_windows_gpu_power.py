@@ -49,6 +49,31 @@ class GpuDisplayTests(unittest.TestCase):
                 FanControlWindow._update_gpu_power_text(window)
                 self.assertEqual(window._set_limit_badge.call_args.args[1], expected)
 
+    def test_boost_term_shows_current_boost_out_of_available_room(self):
+        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        from frontend.fan_control_gui import FanControlWindow
+        for enforced, boost, expected in (
+            (115, True, '115 W sustained + 0 of 25 W boost ='),
+            (140, True, '115 W sustained + 25 of 25 W boost ='),
+            (114.5, True, '115 W sustained + 0 of 25 W boost ='),
+            (115, False, '115 W sustained + 0 W boost ='),
+        ):
+            with self.subTest(enforced=enforced, boost=boost):
+                window = SimpleNamespace(
+                    _gpu_power_state={'available': True, 'offset': 0, 'max_limit_w': 165,
+                                      'enforced_limit_w': enforced, 'dynamic_boost': boost,
+                                      'dynamic_boost_w': 25},
+                    _gpu_power_base=115, gpu_power_slider=Mock(),
+                    _gpu_power_apply_timer=Mock(), gpu_power_max_label=Mock(),
+                    gpu_power_equation_label=Mock(), _gpu_limit_is_fresh=lambda: True,
+                    _set_limit_badge=Mock(), _set_label_warning=Mock(),
+                )
+                window.gpu_power_slider.value.return_value = 0
+                window.gpu_power_slider.isSliderDown.return_value = False
+                window._gpu_power_apply_timer.isActive.return_value = False
+                FanControlWindow._update_gpu_power_text(window)
+                window.gpu_power_equation_label.setText.assert_called_once_with(expected)
+
 
 class GpuSliderTests(unittest.TestCase):
     def test_drag_cancels_pending_apply_and_release_sends_only_final_value(self):
