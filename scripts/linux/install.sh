@@ -53,8 +53,10 @@ for item in backend frontend shared; do
     rm -rf "${APP_DIR:?}/$item"
     cp -r "$SOURCE_DIR/$item" "$APP_DIR/$item"
 done
-install -d -m 755 "$APP_DIR/assets"
-install -m 644 "$SOURCE_DIR/assets/stellaris-fan-control.png" "$APP_DIR/assets/"
+# Icons moved from assets/ to icon/; drop the old copy on update.
+rm -rf "${APP_DIR:?}/assets"
+install -d -m 755 "$APP_DIR/icon"
+install -m 644 "$SOURCE_DIR/icon/stellaris-fan-control.png" "$SOURCE_DIR/icon/stellaris-fan-control-tray.svg" "$APP_DIR/icon/"
 for file in stellaris15gen3_linux_service.py stellaris15gen3_frontend.py README.md THIRD_PARTY_NOTICES.md; do
     install -m 644 "$SOURCE_DIR/$file" "$APP_DIR/$file"
 done

@@ -2,7 +2,7 @@
 
 This file is the living map of source files, generated paths, runtime data, and dependency boundaries. Update it whenever a file moves, a new subsystem is introduced, or a generated/runtime path changes.
 
-Last reviewed: 2026-10-11
+Last reviewed: 2026-10-13
 
 ## Repository files
 
@@ -17,9 +17,14 @@ Last reviewed: 2026-10-11
 |-- THIRD_PARTY_NOTICES.md       pinned dependency provenance and licenses
 |-- .github\workflows\release.yml Windows and Linux builds, mocked checks, tagged releases
 |-- assets\
-|   |-- stellaris-fan-control.png transparent application/tray icon source
-|   |-- stellaris-fan-control.ico Windows executable icon
 |   `-- ss.png                    README interface screenshot
+|-- icon\
+|   |-- make_icon.py             geometric generator for every file below (run with .venv)
+|   |-- stellaris-fan-control.svg color application icon
+|   |-- stellaris-fan-control.png 256 px window, menu, and Windows tray icon
+|   |-- stellaris-fan-control.ico Windows executable icon, 16-256 px
+|   `-- stellaris-fan-control-tray.svg
+|                                light monochrome Linux (GNOME top bar) tray icon
 |-- stellaris15gen3.py           elevated single-process packaged entry point
 |-- stellaris15gen3_frontend.py  normal-user frontend application entry point
 |-- stellaris15gen3_backend.py   elevated backend application entry point
@@ -58,6 +63,7 @@ Last reviewed: 2026-10-11
 |   |-- test_windows_cpu_power.py AMD RAPL sampling, read restrictions, and PawnIO cleanup tests
 |   |-- test_windows_gpu_power.py cTGP gates, NVIDIA limits, verified writes, OEM refusal, persistence
 |   |-- test_packaged_startup.py real Qt check that must not import hardware backends
+|   |-- test_icons.py            committed icons match the generator and render
 |   `-- test_linux_backend.py    fake-EC/sysfs Linux client, sensor, safety, and IPC tests
 |-- scripts\
 |   |-- launch_fan_control.ps1   source setup and normal-user launcher

@@ -49,7 +49,10 @@ from shared.fan_control_ipc import (
 
 INSTANCE_SERVER_NAME = "stellaris15gen3.fan-control"
 STYLESHEET_NAME = "stellaris15gen3.css"
+ICON_DIRECTORY = "icon"
 ICON_FILENAME = "stellaris-fan-control.png"
+# Light monochrome icon for the dark GNOME top bar; Windows keeps the color icon in its tray.
+LINUX_TRAY_ICON_FILENAME = "stellaris-fan-control-tray.svg"
 SETTINGS_FILENAME = "StellarisFanControl.json"
 PROJECT_URL = "https://github.com/salihmarangoz/stellaris_15_gen3_fanspeed_override"
 LINUX_CONFIG_DIRECTORY = "stellaris-fan-control"
@@ -978,15 +981,16 @@ class FanControlWindow(QMainWindow):
         ))
 
     @staticmethod
-    def _icon_path() -> Path:
+    def _icon_path(filename: str = ICON_FILENAME) -> Path:
         if hasattr(sys, "_MEIPASS"):
-            return Path(sys._MEIPASS) / "assets" / ICON_FILENAME
-        return Path(__file__).resolve().parents[1] / "assets" / ICON_FILENAME
+            return Path(sys._MEIPASS) / ICON_DIRECTORY / filename
+        return Path(__file__).resolve().parents[1] / ICON_DIRECTORY / filename
 
     def _setup_tray(self) -> None:
         icon = QIcon(str(self._icon_path()))
         self.setWindowIcon(icon)
-        self.tray_icon = QSystemTrayIcon(icon, self)
+        tray_icon = QIcon(str(self._icon_path(LINUX_TRAY_ICON_FILENAME))) if self._linux else icon
+        self.tray_icon = QSystemTrayIcon(tray_icon, self)
         self.tray_icon.setToolTip("Fan Control")
         tray_menu = QMenu(self)
         show_action = QAction("Show Fan Control", self)
@@ -2116,14 +2120,6 @@ class FanControlWindow(QMainWindow):
         if not self._exit_prepared:
             event.ignore()
             self.hide()
-            self.tray_icon.showMessage(
-                "Fan Control is still running",
-                "The fan-control service keeps running. Use Quit to close the tray icon."
-                if self._linux
-                else "Use the Exit button or the tray menu to stop fan control.",
-                QSystemTrayIcon.MessageIcon.Information,
-                3000,
-            )
             return
 
         self._closing = True

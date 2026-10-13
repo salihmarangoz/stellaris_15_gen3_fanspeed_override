@@ -188,6 +188,7 @@ The always-available Start minimized checkbox persists a boolean `start_minimize
 | 2026-10-11 | Port optional GPU power draw, Direct EC RPM, and lightbar controls to Windows. | Keep display telemetry separate from safety inputs and restrict lightbar writes to Direct EC while OEM control is absent. Linux-validated registers still require live Windows validation. |
 | 2026-10-11 | Read Windows CPU package energy with the unchanged pinned PawnIO module and add gated Windows cTGP controls. | CPU reads succeeded on the target; GPU encoding comes from Linux validation and static OEM address metadata, with Windows NVIDIA enforcement still pending. |
 | 2026-10-11 | Validate Windows sustained GPU limits at 115/130/165 W after explicit owner authorization. | NVIDIA followed all three with Dynamic Boost off. Original EC bytes were restored; driver restoration, Boost toggling, load, and restart/resume still need separate evidence. |
+| 2026-10-13 | Generate the icons from geometry (`icon/make_icon.py`) and use a light monochrome tray icon on Linux. | The previous raster icon blurred into an unreadable blob at the 16 px GNOME top-bar size. The tray icon is designed on a 16 px grid like GNOME's symbolic icons; Windows keeps the color icon in its tray because its taskbar can be light. |
 
 ## Release distribution
 

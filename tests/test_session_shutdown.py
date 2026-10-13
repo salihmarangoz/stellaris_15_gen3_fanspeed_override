@@ -234,6 +234,30 @@ class TrayMenuTests(unittest.TestCase):
             window._closing = True
             window.tray_icon.hide()
 
+    def test_close_hides_to_tray_without_a_notification(self):
+        from tempfile import TemporaryDirectory
+
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(FanControlWindow, "_load_initial_state"),
+            patch.object(
+                FanControlWindow, "_settings_path",
+                return_value=Path(directory) / "settings.json",
+            ),
+        ):
+            backend = Mock()
+            window = FanControlWindow(backend=backend)
+            window.show()
+            with patch.object(window.tray_icon, "showMessage") as show_message:
+                window.close()
+            self.assertFalse(window.isVisible())
+            show_message.assert_not_called()
+            self.assertNotIn(
+                "prepare_exit", [call.args[0] for call in backend.request.call_args_list]
+            )
+            window._closing = True
+            window.tray_icon.hide()
+
 
 class LightbarWindowTests(unittest.TestCase):
     @classmethod

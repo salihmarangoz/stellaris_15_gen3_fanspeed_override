@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <radialGradient id="housing" cx="0.5" cy="0.38" r="0.62">
+      <stop offset="0" stop-color="#353b42"/>
+      <stop offset="1" stop-color="#1c2025"/>
+    </radialGradient>
+    <linearGradient id="gauge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2ec27e"/>
+      <stop offset="0.5" stop-color="#f6d32d"/>
+      <stop offset="1" stop-color="#e01b24"/>
+    </linearGradient>
+    <linearGradient id="blade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4fe0c0"/>
+      <stop offset="1" stop-color="#1fa38a"/>
+    </linearGradient>
+  </defs>
+  <circle cx="128" cy="128" r="122" fill="url(#housing)"/>
+  <circle cx="128" cy="128" r="118" fill="none" stroke="#4a525b" stroke-width="3"/>
+  <path d="M 36.201 181.000 A 106.000 106.000 0 1 1 219.799 181.000" fill="none" stroke="#2a2f35" stroke-width="12" stroke-linecap="round"/>
+  <path d="M 36.201 181.000 A 106.000 106.000 0 1 1 219.799 181.000" fill="none" stroke="url(#gauge)" stroke-width="8" stroke-linecap="round"/>
+  <path d="M 119.792 105.447 A 24.000 24.000 0 0 1 136.208 105.447 A 64.500 64.500 0 0 0 203.933 87.625 A 86.000 86.000 0 0 0 154.575 46.209 A 64.500 64.500 0 0 1 119.792 105.447 Z M 146.912 113.224 A 24.000 24.000 0 0 1 151.985 128.838 A 64.500 64.500 0 0 0 189.863 187.741 A 86.000 86.000 0 0 0 214.000 128.000 A 64.500 64.500 0 0 1 146.912 113.224 Z M 147.897 141.421 A 24.000 24.000 0 0 1 134.615 151.070 A 64.500 64.500 0 0 0 90.300 205.296 A 86.000 86.000 0 0 0 154.575 209.791 A 64.500 64.500 0 0 1 147.897 141.421 Z M 121.385 151.070 A 24.000 24.000 0 0 1 108.103 141.421 A 64.500 64.500 0 0 0 42.837 116.031 A 86.000 86.000 0 0 0 58.425 178.550 A 64.500 64.500 0 0 1 121.385 151.070 Z M 104.015 128.838 A 24.000 24.000 0 0 1 109.088 113.224 A 64.500 64.500 0 0 0 113.066 43.307 A 86.000 86.000 0 0 0 58.425 77.450 A 64.500 64.500 0 0 1 104.015 128.838 Z" fill="url(#blade)"/>
+  <circle cx="128" cy="128" r="22" fill="#262b31" stroke="#4fe0c0" stroke-width="5"/>
+  <circle cx="128" cy="128" r="7" fill="#4fe0c0"/>
+</svg>

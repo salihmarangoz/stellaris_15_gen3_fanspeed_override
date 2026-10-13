@@ -7,8 +7,8 @@ $venv = Join-Path $root '.venv'
 $python = Join-Path $venv 'Scripts\python.exe'
 $pawnModule = Join-Path $root 'third_party\pawnio\AMDFamily17.bin'
 $styleSheet = Join-Path $root 'frontend\stellaris15gen3.css'
-$appIcon = Join-Path $root 'assets\stellaris-fan-control.ico'
-$appIconPng = Join-Path $root 'assets\stellaris-fan-control.png'
+$appIcon = Join-Path $root 'icon\stellaris-fan-control.ico'
+$appIconPng = Join-Path $root 'icon\stellaris-fan-control.png'
 $legacyExecutables = @(
     (Join-Path $root 'dist\StellarisFanControlFrontend.exe'),
     (Join-Path $root 'dist\StellarisFanControlBackend.exe')
@@ -61,7 +61,7 @@ try {
         --icon "$appIcon" `
         --add-data "$styleSheet;frontend" `
         --add-data "$(Join-Path $root 'frontend\checkmark.svg');frontend" `
-        --add-data "$appIconPng;assets" `
+        --add-data "$appIconPng;icon" `
         --add-data "$pawnModule;pawnio" `
         --name StellarisFanControl `
         (Join-Path $root 'stellaris15gen3.py')

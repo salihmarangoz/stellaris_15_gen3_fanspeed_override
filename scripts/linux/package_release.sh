@@ -7,11 +7,11 @@ NAME=StellarisFanControl-linux
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
-mkdir -p "$STAGE/$NAME/scripts/linux" "$STAGE/$NAME/assets" "$ROOT/dist"
+mkdir -p "$STAGE/$NAME/scripts/linux" "$STAGE/$NAME/icon" "$ROOT/dist"
 for item in backend frontend shared; do
     cp -r "$ROOT/$item" "$STAGE/$NAME/$item"
 done
-cp "$ROOT/assets/stellaris-fan-control.png" "$STAGE/$NAME/assets/"
+cp "$ROOT/icon/stellaris-fan-control.png" "$ROOT/icon/stellaris-fan-control-tray.svg" "$STAGE/$NAME/icon/"
 cp "$ROOT"/stellaris15gen3_linux_service.py "$ROOT"/stellaris15gen3_frontend.py \
    "$ROOT"/README.md "$ROOT"/THIRD_PARTY_NOTICES.md "$STAGE/$NAME/"
 find "$ROOT/scripts/linux" -maxdepth 1 -type f -exec cp -p {} "$STAGE/$NAME/scripts/linux/" \;
