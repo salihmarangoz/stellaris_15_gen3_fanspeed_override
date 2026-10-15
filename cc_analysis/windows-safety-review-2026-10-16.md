@@ -2,7 +2,7 @@
 
 Reviewed executable/source baseline: commit 2f5a2e584d7053c39ef657cc04c23b7243205930. Scope: Windows packaged single-process mode and Direct EC, with the shared controller, sensor watchdog, Auto failure handling, GUI worker, request deadlines and shutdown path. Shared-controller findings also affect Linux; its service/process boundary differs from the Windows package.
 
-Result: three actionable findings remain. This review cannot establish that the application cannot stall or overheat the laptop. These are reproducible software failure paths, not observations that the laptop overheated. No application behavior was changed by this review.
+Original review result: three actionable findings on the baseline below. The subsequent implementation addresses their software failure paths; see the remediation section. No review or test establishes that the laptop cannot overheat or that a hung kernel driver can be recovered. The findings below preserve the original baseline evidence; they are not claims about the updated code.
 
 ## P1 - Sensor and EC stalls can block emergency Boost
 
@@ -49,3 +49,23 @@ Required direction: add observable operation deadlines and a defined stalled-ope
 - No sustained load, actual overheating, native-driver hang, forced termination, reboot or hardware thermal-protection behavior was tested. Current integrity checks and the previous short latency run are not proof against these failure cases.
 
 Raw fault reproductions and scripts are ignored under build/qa/windows-safety-review-faults.json, build/qa/windows-safety-review-ui.json, build/qa/review-safety-failure-paths.py and build/qa/review-safety-ui-stall.py.
+
+## Remediation - 2026-10-16
+
+- Sensor waits now have a 2 s caller deadline and a separate single in-flight lane. Freshness is checked before attempting a read; timed-out/late reads cannot refresh it. The watchdog can attempt Boost while a fake sensor remains stuck.
+- EC calls have an 8 s caller deadline, retaining exclusive ownership until the actual operation returns. A late operation is followed by a guarded Boost attempt on its same worker before releasing ownership. No second EC operation starts while it remains stuck; ordinary contention is serialized only within the caller deadline, and expired waiters are never run later. Controller state locks are released when the bounded caller returns.
+- Failed fan targets, including simulated readback/rollback errors, immediately attempt Boost. Output faults and Boost errors/confirmation are separately visible. Lower Manual writes and Boost-off are blocked. Fresh sensors or successful Boost alone cannot clear an output fault; only a verified fresh Auto target or explicit verified Manual 100/100 recovery can.
+- Packaged request_timeout is honored (15 s default). Real offscreen Qt tests show busy clears and Boost/Exit controls become available after a deadline. Further requests are refused while the previous request is actually unfinished. The frontend does not spawn a replacement controller for this in-process condition.
+- The GUI distinguishes confirmed emergency Boost from unconfirmed hardware safety. Exit still refuses to complete unless both 100% targets were successfully written. Optional power telemetry, peripheral maintenance and service close use bounded serialized operations too.
+
+Tracked regression coverage: tests/test_operation_safety.py and tests/test_operation_safety_gui.py. They use fake hardware with bounded Event waits, always released during cleanup. Existing sensor recovery, shutdown, OEM ownership, verification and rollback suites remain applicable. Raw per-module results are ignored under build/qa/safety-fix-module-tests.json.
+
+Remaining physical limit: a permanently hung EC driver also prevents its Boost command. This implementation keeps control/UI waits bounded and reports unconfirmed safety; it cannot cancel arbitrary kernel calls or guarantee cooling through an unavailable actuator. Actual kernel hangs, forced termination, sustained-load thermals and Linux target-hardware recovery have not been validated by these tests.
+
+### Authorized Windows live check of the fixed controller
+
+The app stayed closed; no Auto scheduler or peripheral-maintenance thread was started. Both complete fan tables were initially 100%. A per-byte test guard refused duty-table values below 50%, and recorded zero such attempts. The test wrote Manual 60/60, accepted real PawnIO/NVIDIA temperatures (about 40/38 C), then simulated stale failed sensors by aging the timestamp and substituting a failing reader. It did not wait for a real hardware failure or stall the native driver.
+
+The controller enabled and confirmed EC Boost in 65.836 ms; a separate EC status read reported FanBoostEnable=1. Restoring real readings returned to all 16 entries of both saved 60% tables in 3289.531 ms, with the emergency cleared. Final exit preparation wrote and verified all 32 duties at 100% in 3217.917 ms. Immediate fan telemetry was still ramping (63.5%); the table target was 100%, not a claim that physical speed had already settled. No heat load or stopped-fan test was performed. Raw result: build/qa/windows-safety-fix-live.json. The subsequent ordinary-contention adjustment is covered by mocked serialization/deadline tests; it changes waiting behavior, not the EC protocol.
+
+Final software validation: 195 tests across 15 individually isolated modules, 7 platform-specific skips and no failures (188 executed successfully). Separate module processes avoid the existing Qt test-state interference in combined discovery. Compilation and diff whitespace checks also passed.

@@ -227,7 +227,7 @@ class LinuxBackendController(BackendController):
                         self._next_auto_at = time.monotonic()
                 self._auto_wakeup.set()
             try:
-                corrections = self._service.maintain()
+                corrections = self._call_service("maintain")
             except Exception as exc:
                 message = str(exc)
                 if message != self._logged_maintenance_error:

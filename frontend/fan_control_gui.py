@@ -1731,14 +1731,32 @@ class FanControlWindow(QMainWindow):
         self.auto_target_label.setText(
             "Shared target: --%" if target is None else f"Shared target: {target}%"
         )
-        if backend.get("sensor_emergency"):
+        if backend.get("output_error") or backend.get("sensor_emergency"):
             reason = backend.get("sensor_error") or "no valid reading"
+            output_error = backend.get("output_error")
+            confirmed = backend.get("emergency_boost_confirmed", False)
+            state = (
+                "EC Fan Boost confirmed at 100%."
+                if confirmed else
+                "Fan safety is unconfirmed. Boost could not yet be confirmed. "
+                "Reduce load or shut down if temperatures rise."
+            )
+            if not confirmed and backend.get("boost_error"):
+                state += f" Boost error: {backend['boost_error']}."
+            recovery = (
+                "Retry 100% on both fans or use Automatic for verified recovery."
+                if output_error else "Waiting for valid temperature readings."
+            )
             self._set_fault(
                 "emergency",
-                f"Sensor failure for over 30 s ({reason}). Both fans are forced to "
-                "100% until the sensors recover.",
+                f"Fan output failure: {output_error}. {state} {recovery}"
+                if output_error else
+                f"Sensor failure for over 30 s ({reason}). {state} {recovery}",
             )
-            self._set_status("Sensor failure | Fans forced to 100%")
+            self._set_status(
+                "Fan safety fallback | Boost confirmed at 100%"
+                if confirmed else "Fan safety unconfirmed | Hardware is not responding"
+            )
             return
         self._set_fault("emergency", None)
         if not backend.get("automatic"):
@@ -2279,6 +2297,12 @@ class FanControlWindow(QMainWindow):
             self._backend_offline = True
             if self._linux:
                 self._set_status(f"Fan-control service unavailable | {SERVICE_START_HINT}")
+                return
+            if not getattr(self._backend, "can_restart", True):
+                self._set_status(
+                    "Controller request unfinished | Fan safety unconfirmed; "
+                    "waiting without starting another hardware owner"
+                )
                 return
             self._set_status("Backend unavailable | Waiting to restart")
             now = time.monotonic()

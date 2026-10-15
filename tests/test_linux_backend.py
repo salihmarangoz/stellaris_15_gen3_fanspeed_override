@@ -492,20 +492,40 @@ class ControllerSafetyTests(unittest.TestCase):
         self.assertEqual(service.writes, [])
         self.assertEqual(service.boost, [True, True])
 
-    def test_load_state_reads_the_ec_under_the_state_lock(self) -> None:
+    def test_load_state_serializes_the_cached_boost_update_with_writes(self) -> None:
+        import threading
         service = FakeLinuxService()
         controller = controller_with(service)
-        held = []
+        started, release = threading.Event(), threading.Event()
+        writer_done = threading.Event()
 
         def load_state() -> dict:
-            held.append(controller._state_lock._is_owned())
+            started.set()
+            if not release.wait(1.0):
+                raise RuntimeError("test release missing")
             return {"status": {"FanBoostEnable": "0"}}
 
         service.load_state = load_state
+        reader = threading.Thread(target=controller.load_state)
+        def write() -> None:
+            controller.set_boost(True)
+            writer_done.set()
+        writer = threading.Thread(target=write)
         with patch("backend.fan_control_backend.read_temperatures",
-                   return_value=SensorReadings(60.0, 50.0, "cpu", "gpu")):
-            controller.load_state()
-        self.assertEqual(held, [True])
+                   return_value=SensorReadings(60.0, 50.0, "cpu", "gpu")), \
+                patch("backend.fan_control_backend.read_power_draw", None):
+            try:
+                reader.start()
+                self.assertTrue(started.wait(1.0))
+                writer.start()
+                self.assertFalse(writer_done.wait(0.03))
+            finally:
+                release.set()
+                reader.join(2.0)
+                if writer.ident is not None:
+                    writer.join(2.0)
+        self.assertTrue(writer_done.is_set())
+        self.assertTrue(controller._snapshot()["boost_enabled"])
 
     def test_recovery_in_auto_resumes_validated_targets(self) -> None:
         service = FakeLinuxService()

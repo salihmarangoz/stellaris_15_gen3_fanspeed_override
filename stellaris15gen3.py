@@ -3,11 +3,15 @@ import sys
 from typing import Any
 
 from shared.fan_control_ipc import is_administrator
+from shared.bounded_operation import BoundedOperation
 
 
 class InProcessBackendClient:
+    can_restart = False
+
     def __init__(self, controller: Any) -> None:
         self._controller = controller
+        self._requests = BoundedOperation("Backend request")
 
     def request(
         self,
@@ -16,8 +20,10 @@ class InProcessBackendClient:
         request_timeout: float | None = None,
         **arguments: Any,
     ) -> Any:
-        del request_timeout
-        return self._controller.dispatch(command, arguments)
+        return self._requests.call(
+            lambda: self._controller.dispatch(command, arguments),
+            15.0 if request_timeout is None else request_timeout,
+        )
 
 
 def check_qt_startup() -> int:

@@ -2,7 +2,7 @@
 
 This file is the living map of source files, generated paths, runtime data, and dependency boundaries. Update it whenever a file moves, a new subsystem is introduced, or a generated/runtime path changes.
 
-Last reviewed: 2026-10-13
+Last reviewed: 2026-10-16
 
 ## Repository files
 
@@ -54,6 +54,7 @@ Last reviewed: 2026-10-13
 |   `-- requirements.txt         Windows backend runtime dependencies
 |-- shared\
 |   |-- __init__.py              shared package marker
+|   |-- bounded_operation.py     bounded waits, single in-flight operation, no queue
 |   |-- fan_control_common.py    pure automatic curve and shared lightbar validation
 |   `-- fan_control_ipc.py       IPC, endpoint, and privilege-aware launches
 |-- tests\
@@ -65,6 +66,8 @@ Last reviewed: 2026-10-13
 |   |-- test_windows_cpu_power.py AMD RAPL sampling, read restrictions, and PawnIO cleanup tests
 |   |-- test_windows_gpu_power.py cTGP gates, NVIDIA limits, verified writes, OEM refusal, persistence
 |   |-- test_windows_broker.py   listener-table parsing, bounds, API errors, and fail-closed writes
+|   |-- test_operation_safety.py stalled sensors/EC, late-write ordering, Boost failure/recovery, deadlines
+|   |-- test_operation_safety_gui.py real offscreen deadline recovery and truthful safety warnings
 |   |-- test_packaged_startup.py real Qt check that must not import hardware backends
 |   |-- test_icons.py            committed icons match the generator and render
 |   |-- test_linux_polkit.py     mocked pkcheck subject, refusals, timeout, and /proc start time

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from backend.gpu_mux import FirmwareMux
+from shared.bounded_operation import BoundedOperation, OperationBusy, OperationTimeout
 
 from shared.fan_control_common import (
     AUTO_INTERVAL_SECONDS,
@@ -56,6 +57,14 @@ class BackendController:
         self._mux = FirmwareMux()
         self._state_lock = threading.RLock()
         self._sensor_lock = threading.Lock()
+        self._sensor_calls = BoundedOperation("Temperature driver")
+        self._hardware_calls = BoundedOperation("EC hardware")
+        self._sensor_timeout = 2.0
+        self._hardware_timeout = 8.0
+        self._output_status_lock = threading.Lock()
+        self._output_error: str | None = None
+        self._boost_error: str | None = None
+        self._emergency_boost_confirmed = False
         self._stop_event = threading.Event()
         self._auto_wakeup = threading.Event()
         self._automatic = False
@@ -111,13 +120,17 @@ class BackendController:
         self._stop_event.set()
         self._auto_wakeup.set()
         if self._lightbar_thread is not None:
-            self._lightbar_thread.join()
-        self._service.close(wait=True)
+            self._lightbar_thread.join(timeout=self._hardware_timeout + 1.0)
+        try:
+            self._hardware_calls.call(lambda: self._service.close(wait=True), self._hardware_timeout)
+        except (OperationBusy, OperationTimeout):
+            # Never close an EC client underneath its unfinished native call.
+            pass
 
     def _lightbar_loop(self) -> None:
         while not self._stop_event.wait(LIGHTBAR_MAINTENANCE_INTERVAL_SECONDS):
             try:
-                self._service.maintain_lightbar()
+                self._call_service("maintain_lightbar")
                 error = None
             except Exception as exc:
                 error = str(exc)
@@ -126,7 +139,7 @@ class BackendController:
             maintain_gpu = getattr(self._service, "maintain_gpu_power", None)
             if callable(maintain_gpu):
                 try:
-                    maintain_gpu()
+                    self._call_service("maintain_gpu_power")
                     gpu_error = None
                 except Exception as exc:
                     gpu_error = str(exc)
@@ -206,6 +219,7 @@ class BackendController:
                 "sensor_error": self._sensor_error(),
                 "lightbar_error": self._lightbar_error,
                 "gpu_power_error": self._gpu_power_error,
+                **self._output_status(),
             }
 
     def _sensor_error(self) -> str | None:
@@ -223,7 +237,7 @@ class BackendController:
             if read_power_draw is not None:
                 # Extra display data cannot invalidate a successful sensor read.
                 try:
-                    result.update(read_power_draw())
+                    result.update(self._sensor_calls.call(read_power_draw, self._sensor_timeout, wait_for_slot=True))
                 except Exception:
                     result["cpu_power_w"] = None
                     result["gpu_power_w"] = None
@@ -235,15 +249,21 @@ class BackendController:
             return None, str(exc)
 
     def _read_validated_temperatures(self) -> Any:
-        with self._sensor_lock:
-            attempted = time.monotonic()
-            try:
+        attempted = time.monotonic()
+
+        def read() -> Any:
+            with self._sensor_lock:
                 temperatures = read_temperatures()
                 self._validate_temperatures(temperatures)
-            except Exception as exc:
-                self._record_sensor_result(attempted, str(exc))
-                raise
-            self._record_sensor_result(attempted, None)
+                return temperatures
+
+        try:
+            temperatures = self._sensor_calls.call(read, self._sensor_timeout, wait_for_slot=True)
+        except Exception as exc:
+            self._record_sensor_result(attempted, str(exc))
+            raise
+        # A timed-out read never reaches this point, including when it returns late.
+        self._record_sensor_result(attempted, None)
         return temperatures
 
     @staticmethod
@@ -275,6 +295,8 @@ class BackendController:
                 pass
 
     def _check_sensors(self) -> None:
+        # Freshness must be evaluated before attempting another possibly stuck read.
+        self._update_sensor_emergency()
         with self._sensor_status_lock:
             last_attempt = self._last_sensor_attempt
         if (
@@ -294,31 +316,93 @@ class BackendController:
         with self._state_lock:
             if stale:
                 if not self._sensor_emergency:
-                    # EC Fan Boost reaches 100% within seconds, unlike a table ramp.
-                    # Don't trust the cached Boost flag; set_boost(True) is idempotent.
-                    self._service.set_boost(True)
                     self._sensor_emergency = True
                     self._emergency_kept_user_boost = self._boost_enabled
+                    # Reassert the fallback at the start of every new sensor
+                    # emergency, even if the user's cached Boost was already on.
+                    with self._output_status_lock:
+                        self._emergency_boost_confirmed = False
+                if not self._output_status()["emergency_boost_confirmed"]:
+                    self._try_emergency_boost()
+                return
+            if self._output_status()["output_error"]:
+                # Output recovery needs a verified fresh Auto target or an explicit
+                # 100/100 Manual retry. Fresh sensors alone cannot clear it.
+                self._sensor_emergency = False
+                self._try_emergency_boost()
                 return
             if not self._sensor_emergency:
                 return
             if self._emergency_kept_user_boost:
-                # Boost was the user's choice before the failure; leave it on.
                 self._sensor_emergency = False
             elif self._automatic:
-                # The next Auto cycle writes a validated target, which leaves Boost.
                 self._sensor_emergency = False
                 self._next_auto_at = now
             else:
                 cpu, gpu = self._last_written_duties or (100, 100)
-                self._service.apply_manual(cpu, gpu, create_backup=False)
+                self._apply_fan_target(cpu, gpu, create_backup=False)
                 self._sensor_emergency = False
         self._auto_wakeup.set()
+
+    def _output_status(self) -> dict[str, Any]:
+        with self._output_status_lock:
+            return {
+                "output_error": self._output_error,
+                "boost_error": self._boost_error,
+                "emergency_boost_confirmed": self._emergency_boost_confirmed,
+            }
+
+    def _mark_output_failure(self, error: str) -> None:
+        with self._output_status_lock:
+            self._output_error = error
+            self._emergency_boost_confirmed = False
+
+    def _record_emergency_boost(self, operation: Callable[[], Any]) -> bool:
+        try:
+            if operation() is not True:
+                raise RuntimeError("EC did not confirm Fan Boost")
+        except Exception as exc:
+            with self._output_status_lock:
+                self._boost_error = str(exc)
+            return False
+        with self._output_status_lock:
+            self._boost_error = None
+            self._emergency_boost_confirmed = True
+        return True
+
+    def _call_service(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        service = self._service
+        return self._hardware_calls.call(
+            lambda: getattr(service, method)(*args, **kwargs),
+            self._hardware_timeout,
+            on_timeout=lambda: self._mark_output_failure(f"EC {method} timed out"),
+            # The same worker retains ownership through this fallback. A late
+            # lower fan write must finish before Boost, never after it.
+            after_timeout=lambda: self._record_emergency_boost(lambda: service.set_boost(True)),
+            wait_for_slot=True,
+        )
+
+    def _try_emergency_boost(self) -> bool:
+        return self._record_emergency_boost(lambda: self._call_service("set_boost", True))
+
+    def _apply_fan_target(self, cpu: int, gpu: int, **kwargs: Any) -> Any:
+        try:
+            result = self._call_service("apply_manual", cpu, gpu, **kwargs)
+        except Exception as exc:
+            if not isinstance(exc, OperationTimeout) and not self._output_status()["output_error"]:
+                self._mark_output_failure(str(exc))
+            self._try_emergency_boost()
+            raise
+        with self._output_status_lock:
+            self._output_error = None
+            self._boost_error = None
+            self._emergency_boost_confirmed = False
+        return result
 
     def _refuse_during_sensor_emergency(self) -> None:
         if self._sensor_emergency:
             raise RuntimeError(
-                "Sensor failure: both fans are held at 100% until the sensors recover"
+                "Sensor failure: lower fan writes are blocked until the sensors recover"
             )
 
     @staticmethod
@@ -336,7 +420,9 @@ class BackendController:
             raise PermissionError("Manual fan duty below 30% was not confirmed")
         with self._state_lock:
             self._refuse_during_sensor_emergency()
-            result = self._service.apply_manual(cpu, gpu)
+            if self._output_status()["output_error"] and (cpu, gpu) != (100, 100):
+                raise RuntimeError("Fan output failure: retry 100% on both fans or select Automatic for verified recovery")
+            result = self._apply_fan_target(cpu, gpu)
             self._last_written_duties = (cpu, gpu)
             # A duty write leaves EC Boost on every platform; a stale True here
             # would block Automatic and the sensor-loss Boost.
@@ -348,9 +434,9 @@ class BackendController:
         # lock, as everywhere) so a write cannot slip in between the EC read
         # and the cached Boost flag.
         with self._state_lock:
-            result = self._service.load_state()
+            result = self._call_service("load_state")
             # During a sensor emergency the EC Boost is ours, not the user's.
-            if not self._sensor_emergency:
+            if not self._sensor_emergency and not self._output_status()["output_error"]:
                 self._boost_enabled = str(result["status"]["FanBoostEnable"]) == "1"
         temperatures, temperature_error = self._read_temperature_snapshot()
         result.update(
@@ -362,11 +448,11 @@ class BackendController:
         )
         gpu_power_state = getattr(self._service, "gpu_power_state", None)
         if callable(gpu_power_state):
-            result["gpu_power"] = gpu_power_state()
+            result["gpu_power"] = self._call_service("gpu_power_state")
         return result
 
     def read_telemetry(self) -> dict[str, Any]:
-        telemetry = self._service.read_telemetry()
+        telemetry = self._call_service("read_telemetry")
         temperatures, temperature_error = self._read_temperature_snapshot()
         result = {
             "telemetry": telemetry,
@@ -376,20 +462,20 @@ class BackendController:
         }
         gpu_power_state = getattr(self._service, "gpu_power_state", None)
         if callable(gpu_power_state):
-            result["gpu_power"] = gpu_power_state()
+            result["gpu_power"] = self._call_service("gpu_power_state")
         return result
 
     def set_dynamic_boost(self, enabled: bool) -> dict[str, Any]:
         set_boost = getattr(self._service, "set_dynamic_boost", None)
         if not callable(set_boost):
             raise RuntimeError("Dynamic Boost control is not available on this platform")
-        return set_boost(enabled)
+        return self._call_service("set_dynamic_boost", enabled)
 
     def set_gpu_power(self, offset: int) -> dict[str, Any]:
         set_offset = getattr(self._service, "set_gpu_power_offset", None)
         if not callable(set_offset):
             raise RuntimeError("GPU power limit control is not available on this platform")
-        return set_offset(offset)
+        return self._call_service("set_gpu_power_offset", offset)
 
     def _mux_authorizer(self) -> Callable[[], None] | None:
         # The Windows backend already runs elevated after UAC; Linux asks polkit.
@@ -399,13 +485,13 @@ class BackendController:
         lightbar_state = getattr(self._service, "lightbar_state", None)
         if not callable(lightbar_state):
             raise RuntimeError("Lightbar control is not available on this platform")
-        return lightbar_state()
+        return self._call_service("lightbar_state")
 
     def set_lightbar(self, mode: str, color: tuple[Any, Any, Any]) -> dict[str, Any]:
         set_lightbar = getattr(self._service, "set_lightbar", None)
         if not callable(set_lightbar):
             raise RuntimeError("Lightbar control is not available on this platform")
-        return set_lightbar(mode, color)
+        return self._call_service("set_lightbar", mode, color)
 
     def configure_auto(self, minimum_temp: int, maximum_temp: int) -> dict[str, Any]:
         minimum_temp = max(0, min(100, minimum_temp))
@@ -472,7 +558,7 @@ class BackendController:
                     or maximum_temp != self._maximum_temp
                 ):
                     return
-                self._service.apply_manual(
+                self._apply_fan_target(
                     target, target, create_backup=make_backup, backup_required=False
                 )
                 self._last_written_duties = (target, target)
@@ -497,7 +583,17 @@ class BackendController:
         with self._state_lock:
             if not enabled:
                 self._refuse_during_sensor_emergency()
-            state = self._service.set_boost(enabled)
+                if self._output_status()["output_error"]:
+                    raise RuntimeError("Fan output failure: cannot turn Boost off before verified recovery")
+            try:
+                state = self._call_service("set_boost", enabled)
+            except Exception as exc:
+                if not isinstance(exc, OperationTimeout) and not self._output_status()["output_error"]:
+                    self._mark_output_failure(str(exc))
+                self._try_emergency_boost()
+                raise
+            with self._output_status_lock:
+                self._emergency_boost_confirmed = bool(state)
             self._boost_enabled = state
             if not state and self._automatic:
                 self._next_auto_at = time.monotonic()
@@ -508,7 +604,7 @@ class BackendController:
         if not confirmed:
             raise PermissionError("GCUBridge service changes require confirmation")
         with self._state_lock:
-            self._service.set_oem_service_running(enabled)
+            self._call_service("set_oem_service_running", enabled)
             if self._automatic and not self._boost_enabled:
                 self._next_auto_at = time.monotonic()
             result = self.load_state()
@@ -520,7 +616,7 @@ class BackendController:
             raise PermissionError("Application exit requires confirmation")
         with self._state_lock:
             # No backup: a full or read-only disk must not block the 100% exit write.
-            result = self._service.apply_manual(100, 100, create_backup=False)
+            result = self._apply_fan_target(100, 100, create_backup=False)
             self._last_written_duties = (100, 100)
             self._automatic = False
             self._boost_enabled = False
