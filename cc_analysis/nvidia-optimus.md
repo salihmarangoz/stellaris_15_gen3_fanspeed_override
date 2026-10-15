@@ -77,11 +77,14 @@ The UI reports the saved mode, not an inferred active route, and never reboots.
 The owner's internal panel is already broken; incorrect display routing could
 make pre-boot recovery especially difficult.
 
-Custom-app Windows writes and Linux efivarfs writes/reboot effects have not
-been validated on target hardware. Automated write tests use fake transports
-or ordinary temporary files. Linux efivarfs may mark this vendor variable
-immutable; the application reports that failure and does not remove
-immutability, remount efivarfs, or change kernel lockdown policy.
+On 2026-10-15 the owner reported one successful custom-app save (to dGPU)
+followed by a boot in dGPU mode; the full validation (both modes, backup,
+readback, both platforms) is still pending. Automated write tests use fake
+transports or ordinary temporary files. Linux efivarfs marks this vendor
+variable immutable at every boot. Since 2026-10-16 (owner decision), after
+both confirmations and a polkit administrator password, the Linux service
+clears that immutable flag for the one write and restores it right after; it
+never remounts efivarfs or changes kernel lockdown policy.
 
 The installed 4.9 ACPI DLL hash is
 ee2c506dd414222013e6dbe5c67a774b1fa1387a47ad5d705a82f048c1a945bb.

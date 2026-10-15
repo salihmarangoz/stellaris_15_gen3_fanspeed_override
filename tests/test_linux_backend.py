@@ -9,7 +9,7 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from backend import linux_ec
 from backend.fan_control_backend import BackendController
@@ -697,13 +697,36 @@ class PeerCredentialIpcTests(unittest.TestCase):
             ):
                 client = BackendClient(timeout=2.0, transport="unix")
                 self.assertEqual(client.request("set_mux"), "authorized")
-            # The kernel-reported peer of the request, i.e. this test process.
-            authorize.assert_called_once_with(os.getpid(), os.getuid())
+            # The kernel-reported peer of the request, i.e. this test process,
+            # pinned by its start time when the request arrived.
+            from backend.linux_polkit import process_start_time
+            authorize.assert_called_once_with(os.getpid(), process_start_time(os.getpid()), os.getuid())
         finally:
             server.shutdown()
             server.server_close()
             thread.join(timeout=2.0)
             directory.cleanup()
+
+    def test_set_mux_dispatch_always_passes_the_password_check(self) -> None:
+        # Guards the wiring: dropping authorize= from dispatch must fail a test.
+        from backend import linux_backend
+
+        LinuxFanService._instance = None
+        with TemporaryDirectory() as directory:
+            controller = linux_backend.LinuxBackendController(Path(directory) / "settings.json")
+            controller._mux = Mock()
+            controller._mux.set_mode.return_value = {"changed": True}
+            linux_backend._REQUEST_PEER.value = (1234, 5678, 1000)
+            try:
+                with patch("backend.linux_backend.authorize_process") as authorize:
+                    controller.dispatch("set_mux", {"mode": "dgpu", "confirmed": True,
+                                                    "confirmation_text": "YES DO IT"})
+                    authorizer = controller._mux.set_mode.call_args.kwargs["authorize"]
+                    self.assertTrue(callable(authorizer))
+                    authorizer()
+                    authorize.assert_called_once_with(1234, 5678, 1000)
+            finally:
+                del linux_backend._REQUEST_PEER.value
 
     def test_mux_authorizer_fails_closed_without_a_recorded_peer(self) -> None:
         from backend.linux_backend import LinuxBackendController

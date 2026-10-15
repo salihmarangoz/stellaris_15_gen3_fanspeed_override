@@ -111,8 +111,8 @@ class LinuxFirmwareTransport:
                                            "the kernel sets it again at the next boot", self.path, exc)
         except PermissionError as exc:
             raise RuntimeError(
-                "Cannot write the MUX firmware variable. Root access is required, "
-                "or efivarfs is mounted read-only."
+                "Cannot write the MUX firmware variable: permission denied "
+                "(root with CAP_LINUX_IMMUTABLE is required)."
             ) from exc
 
     @staticmethod
@@ -219,11 +219,14 @@ class FirmwareMux:
         platform_check: Callable[[], None] = validate_platform,
         conflict_check: Callable[[], bool] = conflicting_writer,
         backups: Path | None = None,
+        require_authorization: bool | None = None,
     ) -> None:
         self._transport = transport
         self._platform_check = platform_check
         self._conflict_check = conflict_check
         self._backups = backups
+        # Linux saves must pass the polkit password; refuse a caller that forgot it.
+        self._require_authorization = os.name != "nt" if require_authorization is None else require_authorization
         self._lock = threading.RLock()
         self._changed = False
 
@@ -288,19 +291,27 @@ class FirmwareMux:
             raise ValueError("Select hybrid or dgpu mode")
         if confirmed is not True or type(confirmation_text) is not str or confirmation_text != "YES DO IT":
             raise PermissionError("Both MUX confirmations are required")
+        if authorize is None and self._require_authorization:
+            raise PermissionError("A password check is required for MUX changes; no MUX write was performed")
+        authorized = None
         if authorize is not None:
             # Ask for the password only when a write will follow, and outside the
             # lock so a slow password dialog does not block state reads.
             with self._lock:
                 self._refuse_writer()
-                _, current = self._validated_read()
-            if current[DISPLAY_MODE_OFFSET] != MODE_VALUES[mode]:
+                authorized = self._validated_read()
+            if authorized[1][DISPLAY_MODE_OFFSET] != MODE_VALUES[mode]:
                 authorize()
         with self._lock:
             self._refuse_writer()
             attributes, before = self._validated_read()
             if before[DISPLAY_MODE_OFFSET] == MODE_VALUES[mode]:
                 return {**self.read_state(), "changed": False}
+            # The password covers only the firmware state it was asked for; a
+            # write by anyone in between (or a check that saw no change and asked
+            # nothing) must not turn into a write without a password.
+            if authorized is not None and (attributes, before) != authorized:
+                raise RuntimeError("Firmware changed while waiting for the password; no MUX write was performed")
             backup = self._backup(attributes, before)
             self._refuse_writer()
             if self._validated_read() != (attributes, before):

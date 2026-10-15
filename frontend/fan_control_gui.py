@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -1941,6 +1942,7 @@ class FanControlWindow(QMainWindow):
         if not self.optimus_window.apply_button.isEnabled():
             return
         name = "Hybrid / NVIDIA Optimus enabled" if mode == "hybrid" else "NVIDIA dGPU only / Optimus disabled"
+        cancelled = "NVIDIA Optimus: cancelled, nothing was saved."
         self._set_busy(True)
         try:
             if QMessageBox.question(
@@ -1950,19 +1952,39 @@ class FanControlWindow(QMainWindow):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Cancel,
             ) != QMessageBox.StandardButton.Yes:
+                self._set_status(cancelled)
                 return
             confirmation = ExperimentalMuxConfirmation(self.optimus_window)
             if confirmation.exec() != QDialog.DialogCode.Accepted:
+                self._set_status(cancelled)
                 return
             confirmation_text = confirmation.confirmation_text.text()
             if confirmation_text != "YES DO IT":
+                self._set_status(cancelled)
                 return
         finally:
             self._set_busy(False)
 
         def complete(state: dict[str, Any]) -> None:
             self.optimus_window.show_state(state)
-            self._set_status("Graphics mode saved. Please reboot for the setting to take effect.")
+            if state.get("changed") is False:
+                self._set_status("NVIDIA Optimus: this mode was already saved; nothing was written.")
+            else:
+                self._set_status("Graphics mode saved. Please reboot for the setting to take effect.")
+
+        def failed(details: str) -> None:
+            # A cancelled or wrong password is routine: show the exception's own
+            # one-line message, not a traceback, and re-read the saved mode
+            # instead of greying the window out. The backend's message says
+            # whether anything was written.
+            last = next((line for line in reversed(details.strip().splitlines()) if line.strip()), details)
+            reason = re.sub(r"^[\w.]+: ", "", last.strip())
+            self._set_status("NVIDIA Optimus: save failed | " + reason)
+            QMessageBox.warning(
+                self.optimus_window, "NVIDIA Optimus",
+                f"{reason}\n\nThe window now shows the mode saved in firmware.",
+            )
+            self.open_optimus()
 
         self._run(
             lambda: self._backend.request(
@@ -1972,7 +1994,8 @@ class FanControlWindow(QMainWindow):
             complete,
             "Saving NVIDIA Optimus firmware setting..." if os.name == "nt"
             else "Enter your password in the system dialog to save the NVIDIA Optimus setting...",
-            on_failed=self.optimus_window.show_error,
+            on_failed=failed,
+            show_error=False,
         )
 
     def open_lightbar(self) -> None:

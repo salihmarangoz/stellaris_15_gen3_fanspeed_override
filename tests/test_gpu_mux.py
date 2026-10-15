@@ -43,8 +43,10 @@ class FirmwareMuxTests(unittest.TestCase):
         self.io = FakeFirmware()
         self.platform = Mock()
         self.conflict = Mock(return_value=False)
+        # Most tests check the firmware flow itself; the password tests pass an authorizer.
         self.mux = FirmwareMux(transport=self.io, platform_check=self.platform,
-                               conflict_check=self.conflict, backups=Path(self.directory.name))
+                               conflict_check=self.conflict, backups=Path(self.directory.name),
+                               require_authorization=False)
 
     def save(self, mode="dgpu", **overrides):
         args = {"confirmed": True, "confirmation_text": "YES DO IT", **overrides}
@@ -159,6 +161,49 @@ class FirmwareMuxTests(unittest.TestCase):
         self.assertEqual(self.io.writes, [])
         self.assertEqual(list(Path(self.directory.name).iterdir()), [])
 
+    def test_linux_refuses_a_save_without_a_password_check(self):
+        with patch("backend.gpu_mux.os.name", "posix"):
+            mux = FirmwareMux(transport=self.io, platform_check=self.platform,
+                              conflict_check=self.conflict, backups=Path(self.directory.name))
+            with self.assertRaisesRegex(PermissionError, "password check is required"):
+                mux.set_mode("dgpu", confirmed=True, confirmation_text="YES DO IT")
+        self.assertEqual(self.io.writes, [])
+        # Windows keeps its UAC-elevated flow without a password callback.
+        with patch("backend.gpu_mux.os.name", "nt"):
+            self.assertFalse(FirmwareMux(transport=self.io)._require_authorization)
+
+    def test_a_change_while_waiting_for_the_password_is_not_written(self):
+        def another_save():
+            # Someone else writes the firmware while our password dialog is open.
+            changed = bytearray(self.io.data)
+            changed[10] ^= 0xFF
+            self.io.data = bytes(changed)
+
+        with self.assertRaisesRegex(RuntimeError, "while waiting for the password"):
+            self.save(authorize=Mock(side_effect=another_save))
+        self.assertEqual(self.io.writes, [])
+        self.assertEqual(list(Path(self.directory.name).iterdir()), [])
+
+    def test_a_request_that_saw_no_change_cannot_write_after_another_save(self):
+        # Race found in review: B's pre-check sees dGPU already saved, so it asks
+        # no password; A then saves hybrid; B's locked section must not write dGPU.
+        self.io.data = firmware_blob(mode=1)
+        original_read, reads = self.io.read, []
+
+        def read():
+            reads.append(1)
+            result = original_read()
+            if len(reads) == 1:
+                self.io.data = firmware_blob(mode=0)  # A's authorized save lands now
+            return result
+
+        self.io.read = read
+        authorize = Mock()
+        with self.assertRaisesRegex(RuntimeError, "while waiting for the password"):
+            self.save("dgpu", authorize=authorize)
+        authorize.assert_not_called()
+        self.assertEqual(self.io.writes, [])
+
     def test_password_is_not_asked_without_confirmations_or_with_another_writer(self):
         authorize = Mock()
         with self.assertRaises(PermissionError):
@@ -179,8 +224,17 @@ class FirmwareMuxTests(unittest.TestCase):
             calls.append(value)
             state["flags"] = value
 
+        original_open = Path.open
+
+        def open_like_efivarfs(self_path, mode="r", *args, **kwargs):
+            # efivarfs refuses to open an immutable variable for writing.
+            if "+" in mode and self_path == path and state["flags"] & 0x10:
+                raise PermissionError(1, "Operation not permitted", str(self_path))
+            return original_open(self_path, mode, *args, **kwargs)
+
         patches = (patch.object(LinuxFirmwareTransport, "_get_flags", side_effect=lambda d: state["flags"]),
-                   patch.object(LinuxFirmwareTransport, "_set_flags", side_effect=set_flags))
+                   patch.object(LinuxFirmwareTransport, "_set_flags", side_effect=set_flags),
+                   patch.object(Path, "open", open_like_efivarfs))
         for item in patches:
             item.start()
             self.addCleanup(item.stop)
@@ -207,13 +261,20 @@ class FirmwareMuxTests(unittest.TestCase):
             self.skipTest("needs POSIX file permissions that apply to this user")
         path, io, calls, attributes, changed = self.linux_variable(0x10)
         path.chmod(0o400)
-        with self.assertRaisesRegex(RuntimeError, "Root access"):
+        with self.assertRaisesRegex(RuntimeError, "permission denied"):
             io.write(attributes, changed)
         self.assertEqual(calls, [0, 0x10])
 
     def test_linux_restore_failure_is_logged_and_the_saved_value_stands(self):
         path, io, calls, attributes, changed = self.linux_variable(0x10)
-        LinuxFirmwareTransport._set_flags.side_effect = [None, OSError("busy")]
+        clear_flag = LinuxFirmwareTransport._set_flags.side_effect
+
+        def clear_then_fail(descriptor, value):
+            if calls:
+                raise OSError("busy")
+            clear_flag(descriptor, value)
+
+        LinuxFirmwareTransport._set_flags.side_effect = clear_then_fail
         with self.assertLogs("stellaris15gen3", "WARNING") as logs:
             io.write(attributes, changed)
         self.assertIn("next boot", logs.output[0])
@@ -309,3 +370,48 @@ class MuxGuiTests(unittest.TestCase):
                         window.tray_icon.hide()
                         window.deleteLater()
                         self.app.processEvents()
+
+    def save_through_gui(self, run):
+        """Confirm both dialogs and hand the set_mux request to `run`; return the window state."""
+        from PySide6.QtWidgets import QMessageBox, QDialog
+        from frontend.fan_control_gui import FanControlWindow
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        with patch.object(FanControlWindow, "_load_initial_state"), patch.object(
+            FanControlWindow, "_settings_path", return_value=Path(directory.name) / "settings.json"
+        ):
+            window = FanControlWindow(backend=Mock())
+        self.addCleanup(self.app.processEvents)
+        self.addCleanup(window.deleteLater)
+        self.addCleanup(window.tray_icon.hide)
+        self.addCleanup(setattr, window, "_closing", True)
+        window.optimus_window.show_state({"available": True, "write_available": True, "mode": "hybrid"})
+        window.optimus_window.options["dgpu"].setChecked(True)
+        window._run = Mock(side_effect=run)
+        confirmation = Mock()
+        confirmation.exec.return_value = QDialog.DialogCode.Accepted
+        confirmation.confirmation_text.text.return_value = "YES DO IT"
+        with patch("frontend.fan_control_gui.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \
+                patch("frontend.fan_control_gui.ExperimentalMuxConfirmation", return_value=confirmation), \
+                patch("frontend.fan_control_gui.QMessageBox.warning") as warning, \
+                patch.object(window, "open_optimus") as reread:
+            window.apply_optimus()
+        return window, warning, reread
+
+    def test_a_cancelled_password_shows_one_line_and_rereads_the_saved_mode(self):
+        details = ("Traceback (most recent call last):\n  File \"x.py\", line 1, in <module>\n"
+                   "RuntimeError: The password dialog was cancelled; no MUX write was performed\n")
+        window, warning, reread = self.save_through_gui(
+            lambda operation, complete, message, on_failed=None, **kwargs: on_failed(details))
+        reason = "The password dialog was cancelled; no MUX write was performed"
+        self.assertEqual(window._status_message, "NVIDIA Optimus: save failed | " + reason)
+        self.assertNotIn("Traceback", warning.call_args.args[2])
+        self.assertTrue(warning.call_args.args[2].startswith(reason))
+        reread.assert_called_once_with()
+
+    def test_an_unchanged_mode_is_not_reported_as_saved(self):
+        state = {"available": True, "write_available": True, "mode": "dgpu", "changed": False}
+        window, warning, reread = self.save_through_gui(
+            lambda operation, complete, message, on_failed=None, **kwargs: complete(state))
+        self.assertIn("nothing was written", window._status_message)
+        warning.assert_not_called()

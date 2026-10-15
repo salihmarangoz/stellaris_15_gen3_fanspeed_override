@@ -15,8 +15,8 @@ def pkcheck_result(returncode, stderr=""):
 
 
 class PolkitAuthorizationTests(unittest.TestCase):
-    def check(self, run, uid=1000):
-        return authorize_process(4321, uid, run=run, start_time=lambda pid: 98765)
+    def check(self, run, uid=1000, pid=4321, start_time=98765):
+        return authorize_process(pid, start_time, uid, run=run)
 
     def test_asks_pkcheck_for_the_exact_process_with_a_password_dialog(self):
         run = Mock(return_value=pkcheck_result(0))
@@ -30,6 +30,14 @@ class PolkitAuthorizationTests(unittest.TestCase):
         run = Mock()
         self.check(run, uid=0)
         run.assert_not_called()
+
+    def test_an_unidentified_requester_is_refused_without_asking(self):
+        for pid, start_time in ((4321, None), (0, 98765)):
+            with self.subTest(pid=pid, start_time=start_time):
+                run = Mock()
+                with self.assertRaisesRegex(PermissionError, "Cannot identify.*no MUX write"):
+                    self.check(run, pid=pid, start_time=start_time)
+                run.assert_not_called()
 
     def test_every_refusal_blocks_the_write_with_a_clear_reason(self):
         for returncode, stderr, reason in (

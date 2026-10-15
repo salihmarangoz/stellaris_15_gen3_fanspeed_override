@@ -24,16 +24,21 @@ def process_start_time(pid: int) -> int:
 
 def authorize_process(
     pid: int,
+    start_time: int | None,
     uid: int,
     *,
     run: Callable[..., Any] = subprocess.run,
-    start_time: Callable[[int], int] = process_start_time,
 ) -> None:
-    """Return only when polkit authorized the requesting process; raise otherwise."""
+    """Return only when polkit authorized the requesting process; raise otherwise.
+
+    start_time is the peer's /proc start time, read when its request arrived;
+    pid,start-time,uid lets polkit reject a PID reused since then.
+    """
     if uid == 0:
         return  # root already has every power this check could grant
-    # pid,start-time,uid lets polkit reject a reused PID.
-    subject = f"{pid},{start_time(pid)},{uid}"
+    if pid <= 0 or start_time is None:
+        raise PermissionError("Cannot identify the requesting process; no MUX write was performed")
+    subject = f"{pid},{start_time},{uid}"
     try:
         result = run(
             [PKCHECK, "--action-id", ACTION_ID, "--process", subject, "--allow-user-interaction"],

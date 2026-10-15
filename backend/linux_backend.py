@@ -20,7 +20,7 @@ from shared.fan_control_ipc import linux_socket_path
 from backend.fan_control_backend import BackendController, BackendRequestHandler
 from backend.linux_ec import validate_lightbar
 from backend.linux_fan_service import state_directory
-from backend.linux_polkit import authorize_process
+from backend.linux_polkit import authorize_process, process_start_time
 
 
 LOGGER = logging.getLogger("stellaris15gen3")
@@ -175,8 +175,8 @@ class LinuxBackendController(BackendController):
         peer = getattr(_REQUEST_PEER, "value", None)
         if peer is None:
             raise PermissionError("Unknown requesting process; no MUX write was performed")
-        pid, uid = peer
-        return lambda: authorize_process(pid, uid)
+        pid, start_time, uid = peer
+        return lambda: authorize_process(pid, start_time, uid)
 
     def request_resync(self) -> None:
         # Safe from a signal handler: only sets events.
@@ -257,14 +257,20 @@ class PeerCredentialServer(socketserver.ThreadingUnixStreamServer):
         os.chmod(path, 0o666)
 
     def authorize(self, connection: socket.socket, request: dict[str, Any]) -> None:
-        del request
         credentials = connection.getsockopt(
             socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
         )
         pid, uid, _gid = struct.unpack("3i", credentials)
         if uid not in self.allowed_uids:
             raise PermissionError("This user is not allowed to control the fan service")
-        _REQUEST_PEER.value = (pid, uid)
+        start_time = None
+        if request.get("command") == "set_mux" and pid > 0:
+            # Pin the requester now; polkit is asked later, after the pre-check.
+            try:
+                start_time = process_start_time(pid)
+            except (OSError, ValueError, IndexError):
+                pass  # the requester is gone; the authorizer fails closed
+        _REQUEST_PEER.value = (pid, start_time, uid)
 
 
 def acquire_process_lock(directory: Path) -> Any:
