@@ -191,3 +191,10 @@ stress-*.csv
 The installer also accepts `StellarisFanControl.exe` at the root of an extracted release ZIP and invokes PawnIO setup before copying. Existing installed preferences are preserved. `scripts\package_release.ps1` stages files under an isolated `build\release-<id>` directory and writes `dist\StellarisFanControl-windows-x64.zip` plus `.zip.sha256`. The ZIP contains the executable, README, third-party notices, `scripts\install.ps1`, `scripts\setup_pawnio.ps1`, and `third_party\pawnio\AMDFamily17.bin`.
 
 `.github\workflows\release.yml` builds and runs mocked/offscreen tests on Windows without driver installation or application launch. Tag pushes publish the archive and checksum; manual branch runs retain them as Actions artifacts. Publication runs separately with repository-content write permission.
+
+## Firmware MUX and OEM analysis
+
+- backend/gpu_mux.py: experimental, gated Windows UEFI / Linux efivarfs MUX adapter; one explicit confirmed save, backup and verification.
+- tests/test_gpu_mux.py: mocked firmware safety, byte preservation, concurrency, backup, efivarfs framing and two-stage/exact-text GUI checks.
+- cc_analysis/: tracked Control Center interoperability findings. nvidia-optimus.md records the recovered MUX contract; proprietary raw images/code stay ignored under build/oem-analysis/mux.
+- Runtime MUX backups: %LOCALAPPDATA%\StellarisFanControl\mux-backups (Windows), /var/lib/stellaris-fan-control/mux-backups (Linux); never startup write triggers.

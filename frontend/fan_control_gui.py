@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -371,6 +372,144 @@ class ModeToggle(QAbstractButton):
         painter.drawText(automatic_rect, Qt.AlignmentFlag.AlignCenter, "Automatic")
         painter.setPen(QColor("#07130f") if self.is_manual() else QColor("#eef1f3"))
         painter.drawText(manual_rect, Qt.AlignmentFlag.AlignCenter, "Manual")
+
+
+class ExperimentalMuxConfirmation(QDialog):
+    """The final firmware confirmation requires an exact, unmodified phrase."""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Experimental MUX feature - final confirmation")
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(14)
+        warning = QLabel(
+            "WARNING: This feature is experimental and has not been fully validated. "
+            "Changing firmware settings may cause loss of display output, failure to "
+            "boot normally, or damage to your device. Recovery may require a working "
+            "internal screen or technical service.\n\n"
+            "If you understand these risks, type YES DO IT exactly to continue."
+        )
+        warning.setWordWrap(True)
+        warning.setObjectName("warningText")
+        layout.addWidget(warning)
+        self.confirmation_text = QLineEdit()
+        self.confirmation_text.setAccessibleName("Type YES DO IT exactly")
+        self.confirmation_text.setPlaceholderText("YES DO IT")
+        layout.addWidget(self.confirmation_text)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        cancel = QPushButton("Cancel")
+        cancel.setDefault(True)
+        cancel.clicked.connect(self.reject)
+        actions.addWidget(cancel)
+        self.confirm_button = QPushButton("Save experimental MUX setting")
+        self.confirm_button.setAutoDefault(False)
+        self.confirm_button.setEnabled(False)
+        self.confirm_button.clicked.connect(self.accept)
+        self.confirmation_text.textChanged.connect(
+            lambda text: self.confirm_button.setEnabled(text == "YES DO IT")
+        )
+        actions.addWidget(self.confirm_button)
+        layout.addLayout(actions)
+
+
+class NvidiaOptimusWindow(QDialog):
+    """Explicit, experimental selection of the mode saved for the next boot."""
+
+    apply_requested = Signal()
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("NVIDIA Optimus")
+        self.setObjectName("nvidiaOptimusWindow")
+        self.setMinimumWidth(500)
+        self.saved_mode: str | None = None
+        self._write_available = False
+        self._busy = False
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(12)
+        heading = QLabel("NVIDIA Optimus")
+        heading.setObjectName("heading")
+        layout.addWidget(heading)
+        self.status_label = QLabel("Reading saved graphics mode...")
+        self.status_label.setObjectName("statusText")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+        self.options = {
+            "hybrid": QCheckBox("Enable NVIDIA Optimus (Hybrid / MSHybrid)"),
+            "dgpu": QCheckBox("Disable NVIDIA Optimus (NVIDIA dGPU only)"),
+        }
+        self.option_group = QButtonGroup(self)
+        self.option_group.setExclusive(True)
+        for option in self.options.values():
+            self.option_group.addButton(option)
+            layout.addWidget(option)
+            option.toggled.connect(self._update_enabled)
+        note = QLabel(
+            "Changes take effect after you restart the computer. The saved mode "
+            "may differ from the display routing in use now. This experimental "
+            "firmware feature requires two confirmations before saving."
+        )
+        note.setObjectName("warningText")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.close)
+        actions.addWidget(close_button)
+        self.apply_button = QPushButton("Save for next boot...")
+        self.apply_button.clicked.connect(self.apply_requested.emit)
+        actions.addWidget(self.apply_button)
+        layout.addLayout(actions)
+        self._update_enabled()
+
+    def selected_mode(self) -> str | None:
+        return next((mode for mode, option in self.options.items() if option.isChecked()), None)
+
+    def show_loading(self) -> None:
+        self.saved_mode = None
+        self._write_available = False
+        self.status_label.setText("Reading saved graphics mode...")
+        self._update_enabled()
+
+    def show_state(self, state: dict[str, Any]) -> None:
+        mode = state.get("mode")
+        if not state.get("available") or mode not in self.options:
+            self.show_error(str(state.get("error") or "The firmware mode is unavailable"))
+            return
+        self.saved_mode = mode
+        self._write_available = bool(state.get("write_available"))
+        self.options[mode].setChecked(True)
+        name = "Hybrid / NVIDIA Optimus enabled" if mode == "hybrid" else "NVIDIA dGPU / Optimus disabled"
+        text = f"Saved mode: {name}."
+        if state.get("reboot_required"):
+            text += " Please reboot for the setting to take effect."
+        if state.get("error"):
+            text += " " + str(state["error"])
+        self.status_label.setText(text)
+        self._update_enabled()
+
+    def show_error(self, message: str) -> None:
+        self.saved_mode = None
+        self._write_available = False
+        self.status_label.setText("NVIDIA Optimus unavailable | " + message.strip())
+        self._update_enabled()
+
+    def set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        self._update_enabled()
+
+    def _update_enabled(self, *_args: Any) -> None:
+        for option in self.options.values():
+            option.setEnabled(self.saved_mode is not None and self._write_available and not self._busy)
+        self.apply_button.setEnabled(
+            self._write_available and not self._busy and self.saved_mode is not None
+            and self.selected_mode() != self.saved_mode
+        )
 
 
 class LightbarWindow(QDialog):
@@ -904,7 +1043,21 @@ class FanControlWindow(QMainWindow):
         result.addStretch()
         column.addLayout(result)
         self.gpu_power_panel.setEnabled(False)
-        parent_layout.addWidget(self.gpu_power_panel)
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        row.addWidget(self.gpu_power_panel, 1)
+        self.optimus_panel = ControlPanel()
+        self.optimus_panel.setObjectName("panel")
+        optimus_layout = QVBoxLayout(self.optimus_panel)
+        optimus_layout.setContentsMargins(18, 10, 18, 10)
+        self.optimus_button = QPushButton("NVIDIA Optimus")
+        self.optimus_button.setToolTip("Experimental graphics MUX setting; requires a reboot and two confirmations")
+        self.optimus_button.clicked.connect(self.open_optimus)
+        optimus_layout.addWidget(self.optimus_button)
+        row.addWidget(self.optimus_panel)
+        parent_layout.addLayout(row)
+        self.optimus_window = NvidiaOptimusWindow(self)
+        self.optimus_window.apply_requested.connect(self.apply_optimus)
 
     def _fan_row(
         self, parent_layout: QVBoxLayout, title: str
@@ -1166,6 +1319,8 @@ class FanControlWindow(QMainWindow):
 
     def _set_busy(self, busy: bool, message: str | None = None) -> None:
         self._busy = busy
+        self.optimus_button.setEnabled(not busy)
+        self.optimus_window.set_busy(busy)
         self.boost_button.setEnabled(not busy)
         self.oem_service_button.setEnabled(not busy)
         self.exit_button.setEnabled(not busy or self._linux)
@@ -1725,6 +1880,60 @@ class FanControlWindow(QMainWindow):
             on_failed=failed,
         )
 
+    def open_optimus(self) -> None:
+        if self._busy or self._closing:
+            return
+        self.optimus_window.show_loading()
+        self.optimus_window.show()
+        self.optimus_window.raise_()
+        self.optimus_window.activateWindow()
+        self._run(
+            lambda: self._backend.request("read_mux"),
+            self.optimus_window.show_state,
+            "Reading NVIDIA Optimus firmware setting...",
+            on_failed=self.optimus_window.show_error,
+            show_error=False,
+        )
+
+    def apply_optimus(self) -> None:
+        mode = self.optimus_window.selected_mode()
+        if self._busy or self._closing or mode is None or mode == self.optimus_window.saved_mode:
+            return
+        if not self.optimus_window.apply_button.isEnabled():
+            return
+        name = "Hybrid / NVIDIA Optimus enabled" if mode == "hybrid" else "NVIDIA dGPU only / Optimus disabled"
+        self._set_busy(True)
+        try:
+            if QMessageBox.question(
+                self.optimus_window, "Confirm graphics mode",
+                f"Save {name} for the next boot?\n\nA restart is required. "
+                "This application will not restart your computer automatically.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            confirmation = ExperimentalMuxConfirmation(self.optimus_window)
+            if confirmation.exec() != QDialog.DialogCode.Accepted:
+                return
+            confirmation_text = confirmation.confirmation_text.text()
+            if confirmation_text != "YES DO IT":
+                return
+        finally:
+            self._set_busy(False)
+
+        def complete(state: dict[str, Any]) -> None:
+            self.optimus_window.show_state(state)
+            self._set_status("Graphics mode saved. Please reboot for the setting to take effect.")
+
+        self._run(
+            lambda: self._backend.request(
+                "set_mux", mode=mode, confirmed=True, confirmation_text=confirmation_text
+            ),
+            complete,
+            "Saving NVIDIA Optimus firmware setting...",
+            on_failed=self.optimus_window.show_error,
+        )
+
     def open_lightbar(self) -> None:
         self.lightbar_window.show()
         self.lightbar_window.raise_()
@@ -2136,6 +2345,7 @@ class FanControlWindow(QMainWindow):
         self._gpu_power_apply_timer.stop()
         self.lightbar_window.stop_pending_apply()
         self.lightbar_window.close()
+        self.optimus_window.close()
         try:
             self._backend.request("frontend_detach", request_timeout=0.5)
         except Exception:

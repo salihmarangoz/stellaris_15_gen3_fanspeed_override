@@ -8,6 +8,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from backend.gpu_mux import FirmwareMux
+
 from shared.fan_control_common import (
     AUTO_INTERVAL_SECONDS,
     DEFAULT_MAX_FAN_TEMP,
@@ -51,6 +53,7 @@ WINDOWS_CAPABILITIES = {
 class BackendController:
     def __init__(self) -> None:
         self._service = FanService.instance()
+        self._mux = FirmwareMux()
         self._state_lock = threading.RLock()
         self._sensor_lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -148,6 +151,12 @@ class BackendController:
             "set_boost": lambda: self.set_boost(bool(arguments["enabled"])),
             "set_gpu_power": lambda: self.set_gpu_power(arguments["offset"]),
             "set_dynamic_boost": lambda: self.set_dynamic_boost(arguments["enabled"]),
+            "read_mux": self._mux.read_state,
+            "set_mux": lambda: self._mux.set_mode(
+                arguments["mode"],
+                confirmed=arguments.get("confirmed") is True,
+                confirmation_text=arguments.get("confirmation_text"),
+            ),
             "read_lightbar": self.read_lightbar,
             "set_lightbar": lambda: self.set_lightbar(
                 str(arguments["mode"]),

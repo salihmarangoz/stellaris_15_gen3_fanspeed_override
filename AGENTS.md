@@ -120,3 +120,11 @@ QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest discover -s tests
 - Add only factual important incidents to `ACCIDENTS.md`. Each entry needs a timestamp and nested Problem, Outcomes, and Solution sections; explicitly identify unknown occurrence times.
 - Keep all open debt, problems, and planned work in `TODO.md`. Every entry heading must use `PRIORITY - Title` with one of `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL`, without priority-group sections.
 - Update the affected living documents in the same change as the code or operational discovery that makes them stale.
+
+## Experimental MUX firmware boundary
+
+- MUX selection is separate from the EC write allowlist. backend/gpu_mux.py may change only data byte 0x62 of the exact 180-byte UniWillVariable / GUID 9f33f85c-13ca-4fd1-9c4a-96217722c593, AMD values 0 (Hybrid) or 1 (dGPU). Preserve all other bytes and attributes 7; require exact DMI/BIOS/DSDT, SSID 0x11141D05 and project ID 0x10.
+- Require two user confirmations. The final dialog must require exactly YES DO IT, without trimming or case conversion; enforce it in the backend too. Cancel is the safe default.
+- Back up before writes, reject concurrent changes/OEM ownership, verify full readback. Never retry, periodically reapply, blindly roll back a whole variable, reboot, remove immutable flags, or change firmware protections automatically. Report saved mode without claiming it is the active route.
+- Routine MUX tests must use fake transports or ordinary temporary files. The owner authorized operating the official switch for read-only comparison, not arbitrary custom firmware-write tests. Those and Linux/reboot validation remain pending.
+- Store tracked OEM findings in cc_analysis/; keep raw proprietary binaries, decrypted code and firmware/memory dumps in ignored build/oem-analysis/.

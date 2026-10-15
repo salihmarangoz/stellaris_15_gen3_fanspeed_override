@@ -274,3 +274,11 @@ Every write first saves a `LINUX_EC-*.json` backup in `/var/lib/stellaris-fan-co
 - [File, folder, runtime, and dependency structure](STRUCTURE.md)
 - [Important accident records](ACCIDENTS.md)
 - [Prioritized technical debt, problems, and planned work](TODO.md)
+
+## Experimental NVIDIA Optimus / MUX selection
+
+A separate **NVIDIA Optimus** panel to the right of **GPU power limit** opens a window to select Hybrid/Optimus or NVIDIA dGPU for the next boot. Saving asks for a mode confirmation and a second experimental-risk confirmation; the second requires exactly **YES DO IT**. Canceling either performs no write. The application never reboots automatically.
+
+This experimental feature has not been fully validated. It changes only OemDisplayMode at byte 0x62 of the exact 180-byte UniWillVariable, with platform/firmware checks, a full backup, concurrency checks, and readback verification. The saved mode may differ from the current display route until reboot. Stop OEM Control Center/GCUBridge or tccd before changing it. Its read-only display remains available while the OEM service runs. Opening the window, app startup and maintenance never write this setting.
+
+Windows uses its firmware API with temporary process-token privilege; Linux uses efivarfs through the existing root backend. Linux immutable/read-only protections are not removed automatically. Backups are stored in %LOCALAPPDATA%\StellarisFanControl\mux-backups on Windows and /var/lib/stellaris-fan-control/mux-backups on Linux. Custom-app writes and reboot behavior still require explicit target-hardware validation. [Confirmed protocol and analysis](cc_analysis/nvidia-optimus.md).

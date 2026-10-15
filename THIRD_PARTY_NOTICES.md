@@ -46,3 +46,7 @@ Register meanings and the fan-table zone thresholds were cross-checked against t
 The GUI uses PySide6 (Qt for Python), installed from PyPI into the application's own virtual environment on Linux and bundled into the Windows executable. PySide6 and Qt are available under the GNU LGPL v3 (and other licenses from The Qt Company).
 
 - Project: <https://pypi.org/project/PySide6/>
+
+## Firmware MUX interoperability analysis
+
+The MUX adapter is independently written against Windows firmware APIs and Linux efivarfs. Its variable name, GUID, offset and AMD values were recovered from locally installed official Control Center 4.9 and corroborated by owner-operated on/off/on comparisons on 2026-10-15. No OEM binary or decompiled implementation is distributed. See cc_analysis/nvidia-optimus.md for evidence. ILSpy and ACPICA iASL remain ignored local analysis tools, not application dependencies.

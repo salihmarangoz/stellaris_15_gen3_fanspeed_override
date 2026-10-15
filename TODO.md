@@ -113,3 +113,11 @@ Check contrast, scaling, keyboard navigation, screen-reader labels, and meaning 
 ## HIGH - Validate full-speed exit and Windows shutdown on target hardware
 
 With explicit authorization for live fan writes, verify both fans reach 100% on Exit, shutdown, restart, and sign-out with OEM MQTT and Direct EC. Check pending-operation handling, failure cancellation, and OEM service teardown ordering. Mock tests do not establish that Windows allows enough time or that firmware retains the targets throughout shutdown.
+
+## HIGH - Validate experimental firmware MUX selection on target Windows and Linux
+
+The owner-operated official switch was correlated with only byte 0x62 of the 180-byte UniWillVariable changing 1/0/1 on 2026-10-15. The custom app has a gated adapter and two confirmations, with exact YES DO IT required in the second. Mocked safety/GUI coverage is present. No custom-app NVRAM write, Linux efivarfs write, or subsequent reboot/display routing has been validated. With explicit authorization for hardware-changing tests, verify both modes, backup/readback, Windows write-path privilege restoration, Linux efivarfs immutability behavior, preservation of other bytes, and external pre-boot recovery with the broken panel. Do not infer success from EC telemetry or automatically remove firmware protections.
+
+## HIGH - Revalidate direct Windows fan access after OEM Control Center 4.9 installation
+
+On 2026-10-15 the installed service/ACPI DLL matched the previously analyzed 4.9 package, not the pinned 3.9 direct-fan library. Its existing hash gate remains unchanged. OEM MQTT remains the fan path while GCUBridge runs; stopping it may leave direct fan access unavailable. Analyze and explicitly validate the 4.9 direct interface before changing the pin. MUX access is independent of it.
