@@ -25,6 +25,8 @@ ACPI_LIBRARY_PATH = (
 
 # Control Center 3.9.42.1, validated on the target Stellaris 15 Gen3.
 ACPI_LIBRARY_SHA256 = "345cff34994351e126c4a7ef9ffc8e09fde005951f1a63af50d1945f28961a33"
+ACPI_LIBRARY_49_SHA256 = "ee2c506dd414222013e6dbe5c67a774b1fa1387a47ad5d705a82f048c1a945bb"
+SUPPORTED_ACPI_LIBRARIES = {ACPI_LIBRARY_SHA256, ACPI_LIBRARY_49_SHA256}
 EXPECTED_PROJECT_ID = 0x10
 
 PROJECT_ID_ADDRESS = 0x0740
@@ -137,6 +139,7 @@ class DirectEcClient:
         self._library_loader = library_loader
         self._broker_available = broker_available
         self._fallback_curve = copy.deepcopy(fallback_curve or load_oem_curve_cache())
+        self._library_sha256: str | None = None
         self._library: Any | None = None
         self._read_ec: Callable[[int], int] | None = None
         self._write_ec: Callable[[int, int], None] | None = None
@@ -152,12 +155,15 @@ class DirectEcClient:
             raise RuntimeError(
                 f"Cannot read the OEM ACPI library at {self._library_path}"
             ) from exc
-        if digest.lower() != ACPI_LIBRARY_SHA256:
+        if digest.lower() not in SUPPORTED_ACPI_LIBRARIES:
             raise RuntimeError(
                 "The installed OEM ACPI library is not the validated Control Center "
-                "3.9.42.1 build; direct fan control is disabled"
+                "3.9.42.1 or 4.9.47.13 build; direct fan control is disabled"
             )
 
+        if digest == ACPI_LIBRARY_49_SHA256:
+            validate_ctgp_platform()
+        self._library_sha256 = digest
         loader = self._library_loader or ctypes.WinDLL
         try:
             library = loader(str(self._library_path))
@@ -183,6 +189,7 @@ class DirectEcClient:
         self._read_ec = None
         self._write_ec = None
         self._library = None
+        self._library_sha256 = None
 
     def __enter__(self) -> "DirectEcClient":
         self.connect()
@@ -202,6 +209,8 @@ class DirectEcClient:
     def _write(self, address: int, value: int) -> None:
         if self._write_ec is None:
             raise RuntimeError("Direct EC client is not connected")
+        if self._broker_available():
+            raise RuntimeError("OEM broker became available before the direct EC write")
         if not 0 <= value <= 0xFF:
             raise ValueError(f"Invalid EC byte for 0x{address:04X}: {value}")
         self._write_ec(address, value)
@@ -228,7 +237,13 @@ class DirectEcClient:
             )
         if self._read(AP_EXISTS_ADDRESS) not in (0, 1):
             raise RuntimeError("Unexpected OEM application-presence byte")
-        if self._read(FAN_SUBSYSTEM_STATE_ADDRESS) not in (1, 5):
+        states = (1, 5)
+        if self._library_sha256 == ACPI_LIBRARY_49_SHA256:
+            if not self._read(0x078E) & 0x40:
+                raise RuntimeError("The EC does not support validated universal fan control")
+            # Observed on this exact board with 4.9 before custom fan activation.
+            states = (0, 1, 3, 4, 5, 7)
+        if self._read(FAN_SUBSYSTEM_STATE_ADDRESS) not in states:
             raise RuntimeError("Unexpected fan-subsystem state byte")
         table = self._read_raw_table()
         for key in ("cpu_up", "cpu_down", "gpu_up", "gpu_down"):
@@ -322,7 +337,7 @@ class DirectEcClient:
                 "fan_control_mirror": self._read(FAN_CONTROL_MIRROR_ADDRESS),
                 "ap_exists": self._read(AP_EXISTS_ADDRESS),
                 "fan_subsystem_state": self._read(FAN_SUBSYSTEM_STATE_ADDRESS),
-                "library_sha256": ACPI_LIBRARY_SHA256,
+                "library_sha256": self._library_sha256,
                 "source": "last_oem_curve_cache",
             }
             return result
@@ -352,7 +367,7 @@ class DirectEcClient:
                 "fan_control_mirror": self._read(FAN_CONTROL_MIRROR_ADDRESS),
                 "ap_exists": self._read(AP_EXISTS_ADDRESS),
                 "fan_subsystem_state": self._read(FAN_SUBSYSTEM_STATE_ADDRESS),
-                "library_sha256": ACPI_LIBRARY_SHA256,
+                "library_sha256": self._library_sha256,
             },
         }
 
@@ -511,12 +526,13 @@ class DirectEcClient:
             "gpu_down": GPU_TEMP_DOWN_ADDRESS,
             "gpu_duty": GPU_TABLE_DUTY_ADDRESS,
         }
+        subsystem = previous_subsystem_state | 0x04 if self._library_sha256 == ACPI_LIBRARY_49_SHA256 else 5
+        mirror = previous_mirror | 0x80 if self._library_sha256 == ACPI_LIBRARY_49_SHA256 else control
         try:
             self._write(AP_EXISTS_ADDRESS, 1)
-            self._write(FAN_SUBSYSTEM_STATE_ADDRESS, 5)
+            self._write(FAN_SUBSYSTEM_STATE_ADDRESS, subsystem)
             self._write(FAN_CONTROL_ADDRESS, control)
-            self._read(FAN_CONTROL_MIRROR_ADDRESS)
-            self._write(FAN_CONTROL_MIRROR_ADDRESS, control)
+            self._write(FAN_CONTROL_MIRROR_ADDRESS, mirror)
             order = (
                 ("gpu_up", GPU_TEMP_UP_ADDRESS),
                 ("cpu_up", CPU_TEMP_UP_ADDRESS),
@@ -532,11 +548,11 @@ class DirectEcClient:
                 raise RuntimeError("Complete fan-table readback did not match the direct write")
             if self._read(FAN_CONTROL_ADDRESS) != control:
                 raise RuntimeError("Fan-control mode readback did not match the direct write")
-            if self._read(FAN_CONTROL_MIRROR_ADDRESS) != control:
+            if self._read(FAN_CONTROL_MIRROR_ADDRESS) != mirror:
                 raise RuntimeError("Mirrored fan-control mode did not match the direct write")
             if self._read(AP_EXISTS_ADDRESS) != 1:
                 raise RuntimeError("OEM application-presence readback did not match the direct write")
-            if self._read(FAN_SUBSYSTEM_STATE_ADDRESS) != 5:
+            if self._read(FAN_SUBSYSTEM_STATE_ADDRESS) != subsystem:
                 raise RuntimeError("Fan-subsystem state did not match the direct write")
         except Exception:
             for key, address in addresses.items():
@@ -552,12 +568,14 @@ class DirectEcClient:
         if self._broker_available():
             raise RuntimeError("OEM broker became available before the direct boost write")
         expected = FAN_CONTROL_BOOST if enabled else FAN_CONTROL_USER_HIGH
+        subsystem = self._read(FAN_SUBSYSTEM_STATE_ADDRESS) | 0x04 if self._library_sha256 == ACPI_LIBRARY_49_SHA256 else 5
+        mirror = self._read(FAN_CONTROL_MIRROR_ADDRESS) | 0x80 if self._library_sha256 == ACPI_LIBRARY_49_SHA256 else expected
         self._write(AP_EXISTS_ADDRESS, 1)
-        self._write(FAN_SUBSYSTEM_STATE_ADDRESS, 5)
+        self._write(FAN_SUBSYSTEM_STATE_ADDRESS, subsystem)
         self._write(FAN_CONTROL_ADDRESS, expected)
-        self._write(FAN_CONTROL_MIRROR_ADDRESS, expected)
+        self._write(FAN_CONTROL_MIRROR_ADDRESS, mirror)
         if (
             self._read(FAN_CONTROL_ADDRESS) != expected
-            or self._read(FAN_CONTROL_MIRROR_ADDRESS) != expected
+            or self._read(FAN_CONTROL_MIRROR_ADDRESS) != mirror
         ):
             raise RuntimeError("Fan Boost readback did not match the direct write")

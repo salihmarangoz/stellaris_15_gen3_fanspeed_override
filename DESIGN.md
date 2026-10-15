@@ -212,3 +212,7 @@ User-initiated mode changes ask for confirmation in the toggle before its checke
 ## Experimental firmware MUX selection (2026-10-15)
 
 backend/gpu_mux.py is independent of fan EC transport: the official MUX switch writes the AMD OemDisplayMode byte at UniWillVariable + 0x62. The backend owns firmware access, exact platform/DSDT and variable-format checks, lock, pre-write backup, concurrent-change refusal and full verification. It performs no periodic/startup/recovery writes and never reboots. It does not blindly roll back a whole NVRAM blob on verification failure. The GUI uses existing authenticated IPC and serialized workers, with a separate panel next to GPU power and two confirmations. The final confirmation and backend require exactly YES DO IT. Saved mode is distinguished from the active display route. See cc_analysis/nvidia-optimus.md for evidence and unvalidated target behavior.
+
+## Windows OEM 4.9 transport compatibility
+
+The second exact DLL hash is permitted only with the exact board/SKU/BIOS and universal EC support. The fan subsystem can start at 0 and becomes 3 after OEM shutdown; preserve low flags while setting bit 2 (3 becomes 7), and preserve mirror bits while setting bit 7. Broker ownership is checked for each low-level write, including rollback, to stop mid-operation if OEM ownership returns. Backups identify the actual library. Evidence and target-test limits are in cc_analysis/control-center-4.9-fans.md.

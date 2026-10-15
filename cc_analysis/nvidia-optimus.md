@@ -85,8 +85,9 @@ immutability, remount efivarfs, or change kernel lockdown policy.
 
 The installed 4.9 ACPI DLL hash is
 ee2c506dd414222013e6dbe5c67a774b1fa1387a47ad5d705a82f048c1a945bb.
-It differs from the pinned 3.9 direct-fan DLL. MUX implementation requires
-neither DLL and does not relax the existing direct-fan hash gate.
+It differs from the original pinned 3.9 direct-fan DLL. MUX implementation
+requires neither DLL. Later, separate direct fan support for this exact 4.9
+image was added and target-observed; see control-center-4.9-fans.md.
 
 ## Primary API references
 

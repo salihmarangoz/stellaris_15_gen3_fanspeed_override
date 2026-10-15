@@ -198,3 +198,6 @@ The installer also accepts `StellarisFanControl.exe` at the root of an extracted
 - tests/test_gpu_mux.py: mocked firmware safety, byte preservation, concurrency, backup, efivarfs framing and two-stage/exact-text GUI checks.
 - cc_analysis/: tracked Control Center interoperability findings. nvidia-optimus.md records the recovered MUX contract; proprietary raw images/code stay ignored under build/oem-analysis/mux.
 - Runtime MUX backups: %LOCALAPPDATA%\StellarisFanControl\mux-backups (Windows), /var/lib/stellaris-fan-control/mux-backups (Linux); never startup write triggers.
+
+- tests/test_windows_driver_49.py covers the additional exact library gate, inactive/subsystem states, bit preservation, and broker return during fan writes.
+- cc_analysis/control-center-4.9-fans.md records the 4.9 native ABI, observed shutdown transition, live Direct EC observation and remaining validation.

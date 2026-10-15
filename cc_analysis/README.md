@@ -14,3 +14,5 @@ redistributed. Local raw artifacts remain ignored under build/oem-analysis/.
 Future Control Center interoperability findings belong in this directory. Keep
 numeric facts and independently written summaries here, and raw OEM artifacts
 out of Git.
+
+- [Control Center 4.9 fan transport](control-center-4.9-fans.md): exact-image support, subsystem bit preservation and owner-authorized Windows test.

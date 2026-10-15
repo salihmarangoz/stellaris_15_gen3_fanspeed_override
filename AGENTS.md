@@ -2,7 +2,7 @@
 
 ## Project scope
 
-This repository contains experimental, hardware-specific fan control for a Stellaris 15 Gen3 / XMG-Uniwill-style laptop (DMI board `GMxZGxx`, SKU `STELLARIS1XA03`). On Windows it uses OEM Control Center 3.9.42.1; on Ubuntu it talks to the EC directly through the firmware's INOU memory window from a root systemd service. Treat every fan write and low-level sensor read as hardware-sensitive. Read `README.md` and `THIRD_PARTY_NOTICES.md` before changing behavior or dependencies.
+This repository contains experimental, hardware-specific fan control for a Stellaris 15 Gen3 / XMG-Uniwill-style laptop (DMI board `GMxZGxx`, SKU `STELLARIS1XA03`). On Windows it uses the hash-pinned OEM Control Center 3.9.42.1 or 4.9.47.13 EC library; on Ubuntu it talks to the EC directly through the firmware's INOU memory window from a root systemd service. Treat every fan write and low-level sensor read as hardware-sensitive. Read `README.md` and `THIRD_PARTY_NOTICES.md` before changing behavior or dependencies.
 
 ## Safety invariants
 
@@ -128,3 +128,9 @@ QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest discover -s tests
 - Back up before writes, reject concurrent changes/OEM ownership, verify full readback. Never retry, periodically reapply, blindly roll back a whole variable, reboot, remove immutable flags, or change firmware protections automatically. Report saved mode without claiming it is the active route.
 - Routine MUX tests must use fake transports or ordinary temporary files. The owner authorized operating the official switch for read-only comparison, not arbitrary custom firmware-write tests. Those and Linux/reboot validation remain pending.
 - Store tracked OEM findings in cc_analysis/; keep raw proprietary binaries, decrypted code and firmware/memory dumps in ignored build/oem-analysis/.
+
+## Control Center 4.9 fan compatibility
+
+- The additional exact DLL hash ee2c506dd414222013e6dbe5c67a774b1fa1387a47ad5d705a82f048c1a945bb requires the exact Windows board/SKU/BIOS and EC universal-control bit. Keep unknown libraries refused.
+- On that image subsystem states 0/1/3/4/5/7 are accepted; set only bit 2 of 0x07C6 and bit 7 of 0x07C5 while preserving other bits. The owner-authorized target check observed 3 becoming 7, uniform raw 90 fan tables and both RPM readings with the OEM service stopped. Sustained Auto and additional feature checks remain pending.
+- Check OEM broker ownership before every individual direct EC write, including rollback. Keep OEM driver/DLL installed when stopping its UI/service. Details: cc_analysis/control-center-4.9-fans.md.

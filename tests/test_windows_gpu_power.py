@@ -189,7 +189,7 @@ class DirectGpuPowerTests(unittest.TestCase):
         self.assertTrue(all(address in CTGP_ADDRESSES for address, value in self.writes))
 
     def test_oem_return_refuses_further_write_and_rollback(self):
-        self.broker.side_effect = [False, False, True, True]
+        self.broker.side_effect = lambda: bool(self.writes)
         with self.assertRaisesRegex(RuntimeError, 'rollback could not complete'):
             self.client.write_ctgp(25, True)
         self.assertEqual(self.writes, [(0x744, 25)])
