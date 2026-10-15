@@ -135,6 +135,7 @@ QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest discover -s tests
 - The additional exact DLL hash ee2c506dd414222013e6dbe5c67a774b1fa1387a47ad5d705a82f048c1a945bb requires the exact Windows board/SKU/BIOS and EC universal-control bit. Keep unknown libraries refused.
 - On that image subsystem states 0/1/3/4/5/7 are accepted; set only bit 2 of 0x07C6 and bit 7 of 0x07C5 while preserving other bits. The owner-authorized target check observed 3 becoming 7, uniform raw 90 fan tables and both RPM readings with the OEM service stopped. Sustained Auto and additional feature checks remain pending.
 - Check OEM broker ownership before every individual direct EC write, including rollback. Keep OEM driver/DLL installed when stopping its UI/service. Details: cc_analysis/control-center-4.9-fans.md.
+- Windows ownership checks use the fresh IPv6 listener table in backend/windows_broker.py. Cache only the System32 API binding, never absence; query/parsing errors must refuse writes. Do not reintroduce timed socket connects per byte or weaken exclusion to improve performance. Authorized Manual latency results and the owner's 50% test floor: cc_analysis/windows-direct-ec-latency.md.
 
 ## Slider commit behavior
 

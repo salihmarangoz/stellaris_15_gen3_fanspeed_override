@@ -43,6 +43,7 @@ Last reviewed: 2026-10-13
 |   |-- fan_control_service.py   serialized singleton, control-method selector, GPU/lightbar settings
 |   |-- fan_control.py           low-level MQTT, curves, backup/restore CLI
 |   |-- direct_fan_control.py    validated Uniwill EC fan tables, RPM, cTGP, and lightbar access
+|   |-- windows_broker.py       fresh Windows IPv6 listener table for per-write OEM exclusion
 |   |-- fan_control_probe.py     read-only MQTT diagnostic utility
 |   |-- linux_ec.py              Linux EC window, platform gates, verified table/cTGP/lightbar writes
 |   |-- linux_sensors.py         Linux k10temp, NVIDIA, and RAPL readings
@@ -63,6 +64,7 @@ Last reviewed: 2026-10-13
 |   |-- test_windows_telemetry.py optional GPU power, lightbar settings, and OEM exclusion tests
 |   |-- test_windows_cpu_power.py AMD RAPL sampling, read restrictions, and PawnIO cleanup tests
 |   |-- test_windows_gpu_power.py cTGP gates, NVIDIA limits, verified writes, OEM refusal, persistence
+|   |-- test_windows_broker.py   listener-table parsing, bounds, API errors, and fail-closed writes
 |   |-- test_packaged_startup.py real Qt check that must not import hardware backends
 |   |-- test_icons.py            committed icons match the generator and render
 |   |-- test_linux_polkit.py     mocked pkcheck subject, refusals, timeout, and /proc start time

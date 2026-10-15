@@ -1,5 +1,9 @@
 # TODO
 
+## MEDIUM - Profile the remaining Windows Direct EC transaction time
+
+The 2026-10-16 listener-table change removed repeated 201 ms TCP timeouts without weakening per-byte OEM exclusion. Owner-authorized Manual tests measured Boost on/off at 88/69 ms, while a full fan-table update still takes 3.2-3.3 seconds through the OEM DLL with complete backup and readback. Profile driver reads/writes and frontend queue time before further changes. Keep transactions serialized, every ownership guard and complete verification/rollback; do not assume Linux direct-memory performance is attainable through this DLL. Live tests require explicit authorization and must honor the owner's requested fan floor. See cc_analysis/windows-direct-ec-latency.md.
+
 This is the single list of open technical debt, known problems, investigations, and planned work. Entries are not grouped by category. Every entry starts with exactly one impact priority: `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL`. Remove an entry when it is completed and preserve any lasting decision in `DESIGN.md`; record an actual important failure in `ACCIDENTS.md`.
 
 ## HIGH - Validate the 30-second sensor-loss Boost on target hardware

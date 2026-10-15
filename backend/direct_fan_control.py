@@ -105,6 +105,9 @@ def load_oem_curve_cache() -> dict[str, Any] | None:
 
 
 def oem_broker_available(timeout: float = 0.2) -> bool:
+    if os.name == "nt":
+        from backend.windows_broker import broker_listening
+        return broker_listening(OEM_HOST, OEM_PORT)
     try:
         with socket.create_connection((OEM_HOST, OEM_PORT), timeout=timeout):
             return True
