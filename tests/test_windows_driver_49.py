@@ -15,8 +15,10 @@ class Driver49Tests(unittest.TestCase):
         self.hash_patch = patch('backend.direct_fan_control.hashlib.sha256', return_value=SimpleNamespace(hexdigest=lambda: ACPI_LIBRARY_49_SHA256))
         self.read_patch = patch.object(Path, 'read_bytes', return_value=b'vendor image')
         self.platform_patch = patch('backend.direct_fan_control.validate_ctgp_platform')
-        self.hash_patch.start(); self.read_patch.start(); self.platform = self.platform_patch.start()
-        self.addCleanup(self.hash_patch.stop); self.addCleanup(self.read_patch.stop); self.addCleanup(self.platform_patch.stop)
+        # connect() refuses non-Windows hosts first; pretend Windows so these mocked tests also run on Linux.
+        self.os_name_patch = patch('backend.direct_fan_control.os.name', 'nt')
+        self.hash_patch.start(); self.read_patch.start(); self.platform = self.platform_patch.start(); self.os_name_patch.start()
+        self.addCleanup(self.hash_patch.stop); self.addCleanup(self.read_patch.stop); self.addCleanup(self.platform_patch.stop); self.addCleanup(self.os_name_patch.stop)
 
     def test_49_accepts_observed_inactive_state_and_reports_actual_digest(self):
         self.client.connect()
