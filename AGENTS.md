@@ -2,7 +2,7 @@
 
 ## Project scope
 
-This repository contains experimental, hardware-specific fan control for a Stellaris 15 Gen3 / XMG-Uniwill-style laptop (DMI board `GMxZGxx`, SKU `STELLARIS1XA03`). On Windows it uses the hash-pinned OEM Control Center 3.9.42.1 or 4.9.47.13 EC library; on Ubuntu it talks to the EC directly through the firmware's INOU memory window from a root systemd service. Treat every fan write and low-level sensor read as hardware-sensitive. Read `README.md` and `THIRD_PARTY_NOTICES.md` before changing behavior or dependencies.
+This repository contains experimental, hardware-specific fan control for a Stellaris 15 Gen3 / XMG-Uniwill-style laptop (DMI board `GMxZGxx`, SKU `STELLARIS1XA03`). On Windows it uses the hash-pinned OEM Control Center 3.9.42.1 or 4.9.47.13 EC library; on Ubuntu it talks to the EC directly through the firmware's INOU memory window from a root systemd service. Treat every fan write and low-level sensor read as hardware-sensitive. Read `README.md`, `docs/safety.md`, and `THIRD_PARTY_NOTICES.md` before changing behavior or dependencies.
 
 ## Safety invariants
 
@@ -111,10 +111,11 @@ QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest discover -s tests
 - Keep `.gitignore` aligned with packaging and generated output.
 - Use ASCII for source and scripts unless an existing file requires otherwise.
 - Keep changes narrowly scoped. Do not rewrite protocol constants or reverse-engineered payloads without verifying them against the installed OEM service.
-- Update the README when prerequisites, safety behavior, Auto curve semantics, or build steps change.
+- Update the user documentation when prerequisites, safety behavior, Auto curve semantics, or build steps change: `docs/usage.md`, `docs/safety.md`, `docs/windows.md`, `docs/linux.md`, or `docs/development.md`, and `README.md` only when its overview, compatibility table, or install commands change.
 
 ## Documentation maintenance
 
+- Keep `README.md` short: warnings, screenshot, feature summary, compatibility, install commands, and links. Feature behavior, safety detail, platform guides, validation results, and build/release steps belong in `docs/`.
 - Keep `DESIGN.md` synchronized with architecture decisions, safety-relevant rationale, and design ideas.
 - Keep `STRUCTURE.md` synchronized with tracked source files, dependency boundaries, and runtime/generated paths.
 - Add only factual important incidents to `ACCIDENTS.md`. Each entry needs a timestamp and nested Problem, Outcomes, and Solution sections; explicitly identify unknown occurrence times.

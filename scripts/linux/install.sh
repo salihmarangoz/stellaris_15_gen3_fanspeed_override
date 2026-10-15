@@ -50,7 +50,7 @@ fi
 
 echo "Copying the application to $APP_DIR..."
 install -d -m 755 "$APP_DIR"
-for item in backend frontend shared; do
+for item in backend frontend shared docs; do
     rm -rf "${APP_DIR:?}/$item"
     cp -r "$SOURCE_DIR/$item" "$APP_DIR/$item"
 done

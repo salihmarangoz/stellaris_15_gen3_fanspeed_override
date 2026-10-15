@@ -16,6 +16,10 @@ foreach ($name in @('install.ps1', 'setup_pawnio.ps1')) {
 foreach ($name in @('README.md', 'THIRD_PARTY_NOTICES.md')) {
     Copy-Item -LiteralPath (Join-Path $root $name) -Destination $stage
 }
+# README links into docs\ and shows the screenshot; ship both so the links work offline.
+Copy-Item -LiteralPath (Join-Path $root 'docs') -Destination $stage -Recurse
+New-Item -ItemType Directory -Path (Join-Path $stage 'assets') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $root 'assets\ss.png') -Destination (Join-Path $stage 'assets')
 Copy-Item -LiteralPath (Join-Path $root 'third_party\pawnio\AMDFamily17.bin') -Destination (Join-Path $stage 'third_party\pawnio')
 $archive = Join-Path $root 'dist\StellarisFanControl-windows-x64.zip'
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $archive -Force

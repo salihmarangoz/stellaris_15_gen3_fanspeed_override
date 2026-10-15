@@ -9,7 +9,7 @@ Last reviewed: 2026-10-16
 ```text
 .
 |-- AGENTS.md                    development and hardware-safety rules
-|-- README.md                    user-facing overview, setup, build, and recovery
+|-- README.md                    short user-facing overview, install, and documentation index
 |-- DESIGN.md                    architecture decisions and design ideas
 |-- STRUCTURE.md                 this repository and runtime-path map
 |-- ACCIDENTS.md                 factual important-incident records
@@ -17,7 +17,13 @@ Last reviewed: 2026-10-16
 |-- THIRD_PARTY_NOTICES.md       pinned dependency provenance and licenses
 |-- .github\workflows\release.yml Windows and Linux builds, mocked checks, tagged releases
 |-- assets\
-|   `-- ss.png                    README interface screenshot
+|   `-- ss.png                    README and docs interface screenshot (shipped in release archives)
+|-- docs\                        user and developer documentation linked from README.md
+|   |-- usage.md                 window, modes, curve, sliders, sensors, GPU power, lightbar, Optimus, settings
+|   |-- safety.md                temperature sources, fail-closed rules, watchdog, hardware writes, limits
+|   |-- windows.md               Windows requirements, install, control paths, CLI, recovery, validation
+|   |-- linux.md                 Ubuntu requirements, install, service, CLI, recovery, validation
+|   `-- development.md           tests, build, packaging, and release publishing
 |-- icon\
 |   |-- make_icon.py             geometric generator for every file below (run with .venv)
 |   |-- stellaris-fan-control.svg color application icon
@@ -85,7 +91,7 @@ Last reviewed: 2026-10-16
 |       |-- stellaris-fan-control.service   root systemd unit
 |       |-- stellaris-fan-control-sleep     resume hook (sends SIGUSR1)
 |       |-- stellaris-fan-control.desktop   menu entry and GUI autostart
-|       |-- package_release.sh   Linux source archive and SHA-256 checksum
+|       |-- package_release.sh   Linux source archive (with docs and screenshot) and SHA-256 checksum
 |       |-- nvidia-powerd.service  NVIDIA daemon unit installed when Ubuntu lacks it
 |       |-- nvidia-dbus.conf     D-Bus policy for nvidia-powerd
 |       |-- io.github.salihmarangoz.stellarisfancontrol.policy  polkit action: password before a MUX write
@@ -197,7 +203,7 @@ stress-*.csv
 
 `scripts\install.ps1` copies that executable to `%ProgramFiles%\StellarisFanControl\StellarisFanControl.exe` and registers the per-user `Stellaris Fan Control` scheduled task. The highest-privilege task starts at interactive sign-in, not pre-login system boot, so the window and tray icon are available on the user's desktop. The script verifies that the source and installed executable SHA-256 hashes match.
 
-The installer also accepts `StellarisFanControl.exe` at the root of an extracted release ZIP and invokes PawnIO setup before copying. Existing installed preferences are preserved. `scripts\package_release.ps1` stages files under an isolated `build\release-<id>` directory and writes `dist\StellarisFanControl-windows-x64.zip` plus `.zip.sha256`. The ZIP contains the executable, README, third-party notices, `scripts\install.ps1`, `scripts\setup_pawnio.ps1`, and `third_party\pawnio\AMDFamily17.bin`.
+The installer also accepts `StellarisFanControl.exe` at the root of an extracted release ZIP and invokes PawnIO setup before copying. Existing installed preferences are preserved. `scripts\package_release.ps1` stages files under an isolated `build\release-<id>` directory and writes `dist\StellarisFanControl-windows-x64.zip` plus `.zip.sha256`. The ZIP contains the executable, README, `docs\`, the `assets\ss.png` screenshot, third-party notices, `scripts\install.ps1`, `scripts\setup_pawnio.ps1`, and `third_party\pawnio\AMDFamily17.bin`.
 
 `.github\workflows\release.yml` builds and runs mocked/offscreen tests on Windows without driver installation or application launch. Tag pushes publish the archive and checksum; manual branch runs retain them as Actions artifacts. Publication runs separately with repository-content write permission.
 
