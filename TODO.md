@@ -60,7 +60,7 @@ On 2026-10-13, with Dynamic Boost on, a +0 W offset and `nvidia-powerd` running,
 
 ## HIGH - Validate the Linux MUX password flow on target hardware
 
-The Linux save now asks polkit for an administrator password and lifts the efivarfs immutable flag of UniWillVariable only around its one write (2026-10-15); only mocked tests and a read-only flags ioctl on the real variable cover it. After reinstalling (the installer adds the polkit rule), with explicit authorization: save the other mode from the GUI, confirm the GNOME password dialog appears after YES DO IT, that Cancel and a wrong password leave the variable and backups untouched, that a correct password writes only byte 0x62 and `lsattr` shows `i` again afterwards, and that the next boot uses the saved mode.
+The Linux save asks polkit for an administrator password and lifts the efivarfs immutable flag of UniWillVariable only around its one write. Validated on 2026-10-16 00:19 (owner-run, installed 03c3e23): the GNOME password dialog appeared after YES DO IT, polkit logged a one-shot authorization for this action, and the save to Hybrid changed only data byte 0x62 (1 to 0). The flag was already cleared by hand that boot, so the lift/restore path did not run. Still to check: Cancel and a wrong password leave the variable and backups untouched; after a fresh boot (flag set again) a save works and `lsattr` shows `i` afterwards; the next boot uses the saved mode.
 
 ## MEDIUM - Validate the lightbar on battery, after suspend, and after reboot
 
