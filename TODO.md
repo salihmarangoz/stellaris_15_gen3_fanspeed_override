@@ -8,7 +8,7 @@ This is the single list of open technical debt, known problems, investigations, 
 
 ## HIGH - Validate the 30-second sensor-loss Boost on target hardware
 
-The owner decided on 2026-09-29 that both fans go to 100% when no valid CPU or GPU reading succeeds for 30 seconds; the backend now enables EC Fan Boost and refuses Manual writes until recovery. Only mocked tests cover it. With explicit authorization for live writes, inject a sensor failure (for example a failing `nvidia-smi`) on Linux and on Windows with both OEM MQTT and Direct EC, and confirm Boost within about 35 seconds, the GUI warning, and correct recovery in Automatic and Manual modes.
+The owner decided on 2026-09-29 that both fans go to 100% when no valid CPU or GPU reading succeeds for 30 seconds; the backend now enables EC Fan Boost and refuses Manual writes until recovery. The 2026-10-16 authorized Windows Direct EC check aged the success timestamp, injected a failing reader and confirmed Boost (65.836 ms) plus recovery to saved Manual 60/60 targets, ending at verified 100/100. This validates the fallback action, not the real 30-second timer or a native-driver hang. With explicit authorization for further live writes, inject a sensor failure (for example a failing `nvidia-smi`) on Linux and on Windows with both OEM MQTT and Direct EC, and confirm Boost within about 35 seconds, the GUI warning, and correct recovery in Automatic and Manual modes.
 
 ## HIGH - Re-test Windows after the cross-platform refactor
 
