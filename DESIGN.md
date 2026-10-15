@@ -216,3 +216,7 @@ backend/gpu_mux.py is independent of fan EC transport: the official MUX switch w
 ## Windows OEM 4.9 transport compatibility
 
 The second exact DLL hash is permitted only with the exact board/SKU/BIOS and universal EC support. The fan subsystem can start at 0 and becomes 3 after OEM shutdown; preserve low flags while setting bit 2 (3 becomes 7), and preserve mirror bits while setting bit 7. Broker ownership is checked for each low-level write, including rollback, to stop mid-operation if OEM ownership returns. Backups identify the actual library. Evidence and target-test limits are in cc_analysis/control-center-4.9-fans.md.
+
+## Apply slider values after release
+
+CPU/GPU fan, Automatic temperature and RGB sliders now follow the existing GPU power behavior: pressing cancels pending work, dragging previews locally, and release commits the final value. Both the scheduler and apply callback refuse while a slider in the same control group is down, covering queued timeout callbacks and mirrored fan values. A separate single-shot timer defers temperature changes, including spin-box focus-out before a mouse press. Mode changes and shutdown stop pending temperature commits. Keyboard/wheel and completed number edits retain bounded debounce; low-duty fan confirmation and backend scheduling are unchanged.

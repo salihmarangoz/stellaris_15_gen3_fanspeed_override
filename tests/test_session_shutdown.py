@@ -89,7 +89,7 @@ class SessionShutdownTests(unittest.TestCase):
         pool.setMaxThreadCount(1)
         return SimpleNamespace(
             _pool=pool, _backend=Mock(), _exit_prepared=False,
-            _closing=False, _manual_apply_timer=Mock(),
+            _closing=False, _manual_apply_timer=Mock(), _auto_configure_timer=Mock(),
             _set_status=Mock(), close=Mock(),
         )
 
@@ -102,6 +102,7 @@ class SessionShutdownTests(unittest.TestCase):
         window.close.side_effect = lambda: calls.append("close")
         FanControlWindow.prepare_session_shutdown(window, manager)
         self.assertEqual(calls, ["pending operation", "prepare_exit", "close"])
+        window._auto_configure_timer.stop.assert_called_once()
         window._backend.request.assert_called_once_with(
             "prepare_exit", confirmed=True, request_timeout=40.0
         )

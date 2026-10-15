@@ -528,7 +528,7 @@ class LightbarWindow(QDialog):
         self.applied_state: tuple[str, tuple[int, ...]] | None = None
         self._apply_timer = QTimer(self)
         self._apply_timer.setSingleShot(True)
-        self._apply_timer.timeout.connect(self.apply_requested.emit)
+        self._apply_timer.timeout.connect(self._emit_apply_if_released)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 18, 22, 18)
@@ -581,6 +581,8 @@ class LightbarWindow(QDialog):
             slider.valueChanged.connect(spin.setValue)
             spin.valueChanged.connect(slider.setValue)
             slider.valueChanged.connect(self._color_changed)
+            slider.sliderPressed.connect(self._apply_timer.stop)
+            slider.sliderReleased.connect(lambda: self._color_changed(0))
             color_layout.addLayout(row)
             self.color_sliders.append(slider)
             self.color_spins.append(spin)
@@ -611,7 +613,17 @@ class LightbarWindow(QDialog):
             return None
         return mode, tuple(slider.value() for slider in self.color_sliders)
 
+    def is_dragging(self) -> bool:
+        return any(slider.isSliderDown() for slider in self.color_sliders)
+
+    def _emit_apply_if_released(self) -> None:
+        if not self.is_dragging():
+            self.apply_requested.emit()
+
     def schedule_apply(self, delay_ms: int) -> None:
+        if self.is_dragging():
+            self._apply_timer.stop()
+            return
         self._apply_timer.start(delay_ms)
 
     def stop_pending_apply(self) -> None:
@@ -641,7 +653,7 @@ class LightbarWindow(QDialog):
             self._syncing = False
         self.applied_state = (mode, tuple(slider.value() for slider in self.color_sliders))
         self._loaded = True
-        self.status_label.setText("Click an option to switch to it. Changes apply immediately.")
+        self.status_label.setText("Click an option to switch to it. Color sliders apply after release.")
         self._update_enabled()
 
     def show_error(self, message: str) -> None:
@@ -732,6 +744,10 @@ class FanControlWindow(QMainWindow):
         self._manual_apply_timer.setSingleShot(True)
         self._manual_apply_timer.setInterval(300)
         self._manual_apply_timer.timeout.connect(self.apply_speeds)
+        self._auto_configure_timer = QTimer(self)
+        self._auto_configure_timer.setSingleShot(True)
+        self._auto_configure_timer.setInterval(300)
+        self._auto_configure_timer.timeout.connect(self._configure_auto)
         self._gpu_power_apply_timer = QTimer(self)
         self._gpu_power_apply_timer.setSingleShot(True)
         self._gpu_power_apply_timer.setInterval(400)
@@ -872,10 +888,12 @@ class FanControlWindow(QMainWindow):
         self.min_temp_spin.valueChanged.connect(self._minimum_temp_changed)
         self.max_temp_slider.valueChanged.connect(self._maximum_temp_changed)
         self.max_temp_spin.valueChanged.connect(self._maximum_temp_changed)
-        self.min_temp_slider.sliderReleased.connect(self._configure_auto)
-        self.min_temp_spin.editingFinished.connect(self._configure_auto)
-        self.max_temp_slider.sliderReleased.connect(self._configure_auto)
-        self.max_temp_spin.editingFinished.connect(self._configure_auto)
+        for slider in (self.min_temp_slider, self.max_temp_slider):
+            slider.sliderPressed.connect(self._auto_configure_timer.stop)
+            slider.valueChanged.connect(self._schedule_auto_configure)
+            slider.sliderReleased.connect(self._schedule_auto_configure)
+        self.min_temp_spin.editingFinished.connect(self._schedule_auto_configure)
+        self.max_temp_spin.editingFinished.connect(self._schedule_auto_configure)
 
         reset_row = QHBoxLayout()
         reset_row.addStretch()
@@ -915,7 +933,7 @@ class FanControlWindow(QMainWindow):
         manual_layout.addWidget(self.mirror_fans_checkbox)
 
         warning = QLabel(
-            "Changes apply automatically. Values below 30% may stop a fan and "
+            "Sliders apply after release. Values below 30% may stop a fan and "
             "require confirmation."
         )
         warning.setObjectName("warningText")
@@ -1090,6 +1108,7 @@ class FanControlWindow(QMainWindow):
 
         slider.valueChanged.connect(spin.setValue)
         spin.valueChanged.connect(slider.setValue)
+        slider.sliderPressed.connect(self._manual_apply_timer.stop)
         slider.sliderReleased.connect(lambda: self._manual_input_finished(slider))
         slider.actionTriggered.connect(
             lambda _action: self._manual_slider_action(slider)
@@ -1308,12 +1327,16 @@ class FanControlWindow(QMainWindow):
             self._schedule_manual_apply()
 
     def _manual_input_finished(self, control: QSlider | QSpinBox) -> None:
+        if self.cpu_slider.isSliderDown() or self.gpu_slider.isSliderDown():
+            return
         rounded = ((control.value() + 2) // 5) * 5
         control.setValue(min(100, rounded))
         self._schedule_manual_apply()
 
     def _schedule_manual_apply(self) -> None:
         if self._syncing or self._busy or not self.mode_toggle.is_manual():
+            return
+        if self.cpu_slider.isSliderDown() or self.gpu_slider.isSliderDown():
             return
         self._manual_apply_timer.start()
 
@@ -1347,6 +1370,8 @@ class FanControlWindow(QMainWindow):
         )
 
     def _mode_changed(self, manual: bool) -> None:
+        self._manual_apply_timer.stop()
+        self._auto_configure_timer.stop()
         self._update_mode_panels()
         minimum_temp = self.min_temp_spin.value()
         maximum_temp = self.max_temp_spin.value()
@@ -1409,9 +1434,19 @@ class FanControlWindow(QMainWindow):
         self._set_auto_temperatures(DEFAULT_MIN_FAN_TEMP, DEFAULT_MAX_FAN_TEMP)
         self._configure_auto()
 
-    def _configure_auto(self) -> None:
-        if self.mode_toggle.is_manual() or self._curve_syncing:
+    def _schedule_auto_configure(self, *_args: Any) -> None:
+        if self._curve_syncing or self._busy or self._closing or self.mode_toggle.is_manual():
             return
+        if self.min_temp_slider.isSliderDown() or self.max_temp_slider.isSliderDown():
+            return
+        self._auto_configure_timer.start()
+
+    def _configure_auto(self) -> None:
+        if self.mode_toggle.is_manual() or self._curve_syncing or self._busy or self._closing:
+            return
+        if self.min_temp_slider.isSliderDown() or self.max_temp_slider.isSliderDown():
+            return
+        self._auto_configure_timer.stop()
         minimum_temp = self.min_temp_spin.value()
         maximum_temp = self.max_temp_spin.value()
 
@@ -1739,6 +1774,8 @@ class FanControlWindow(QMainWindow):
     def apply_speeds(self) -> None:
         if self._syncing or self._busy or not self.mode_toggle.is_manual():
             return
+        if self.cpu_slider.isSliderDown() or self.gpu_slider.isSliderDown():
+            return
         cpu = self.cpu_spin.value()
         gpu = self.gpu_spin.value()
         if (cpu, gpu) == self._last_manual_values:
@@ -1956,6 +1993,8 @@ class FanControlWindow(QMainWindow):
         )
 
     def apply_lightbar(self) -> None:
+        if self.lightbar_window.is_dragging():
+            return
         request = self.lightbar_window.requested_state()
         if self._closing or not self._lightbar_available or request is None or request == self.lightbar_window.applied_state:
             return
@@ -2255,6 +2294,7 @@ class FanControlWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 return
             self._manual_apply_timer.stop()
+            self._auto_configure_timer.stop()
             self._gpu_power_apply_timer.stop()
             self.lightbar_window.stop_pending_apply()
             self._exit_prepared = True
@@ -2282,6 +2322,7 @@ class FanControlWindow(QMainWindow):
 
         self._exit_in_progress = True
         self._manual_apply_timer.stop()
+        self._auto_configure_timer.stop()
 
         def complete(_result: dict[str, Any]) -> None:
             self._exit_in_progress = False
@@ -2308,6 +2349,7 @@ class FanControlWindow(QMainWindow):
         # thread or processing callbacks that could schedule another fan command.
         self._closing = True
         self._manual_apply_timer.stop()
+        self._auto_configure_timer.stop()
         outcome: list[str | None] = []
 
         def prepare() -> None:
@@ -2340,6 +2382,7 @@ class FanControlWindow(QMainWindow):
 
         self._closing = True
         self._telemetry_timer.stop()
+        self._auto_configure_timer.stop()
         self._status_timer.stop()
         self._backend_watchdog_timer.stop()
         self._gpu_power_apply_timer.stop()

@@ -134,3 +134,7 @@ QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest discover -s tests
 - The additional exact DLL hash ee2c506dd414222013e6dbe5c67a774b1fa1387a47ad5d705a82f048c1a945bb requires the exact Windows board/SKU/BIOS and EC universal-control bit. Keep unknown libraries refused.
 - On that image subsystem states 0/1/3/4/5/7 are accepted; set only bit 2 of 0x07C6 and bit 7 of 0x07C5 while preserving other bits. The owner-authorized target check observed 3 becoming 7, uniform raw 90 fan tables and both RPM readings with the OEM service stopped. Sustained Auto and additional feature checks remain pending.
 - Check OEM broker ownership before every individual direct EC write, including rollback. Keep OEM driver/DLL installed when stopping its UI/service. Details: cc_analysis/control-center-4.9-fans.md.
+
+## Slider commit behavior
+
+- Every slider drag must preview locally and send no setting until release. Cancel a pending timer on press and guard queued apply callbacks while the relevant slider group is down. Preserve keyboard/wheel debounce, number editing and low-duty confirmation. Temperature spin-box focus-out must not start a synchronous write as another slider is pressed. Cover this with mocked/offscreen tests, without live hardware writes.

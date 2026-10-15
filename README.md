@@ -25,7 +25,7 @@ I built and tested it for one Stellaris 15 Gen3 / XMG-Uniwill-style laptop runni
 - CPU temperature comes directly from the Ryzen `Tctl/Tdie` SMN register through the signed [PawnIO](https://github.com/namazso/PawnIO) driver and a restricted AMD module.
 - The broken Control Center CPU-temperature value is never used in Automatic mode.
 - GPU temperature comes from the NVIDIA driver through `nvidia-smi`.
-- Manual mode applies slider and spin-box changes automatically in 5% steps. CPU and GPU targets can remain independent or be linked with **Mirror fan speeds**. Any value below 30% requires explicit confirmation.
+- Manual fan sliders preview changes while dragged and apply only after release, rounded to 5% steps. Keyboard/wheel changes use a short debounce, and spin-box edits apply when editing finishes. CPU and GPU targets can remain independent or be linked with **Mirror fan speeds**. Any value below 30% requires explicit confirmation.
 - Automatic mode checks temperatures every 15 seconds, uses `max(CPU, GPU)`, and sends one shared target to both fans.
 - The sensor panel displays CPU and GPU temperature gauges plus reported CPU and GPU fan-duty gauges.
 - On Windows, the sensor panel also displays GPU power draw from a separate NVIDIA query, CPU package power from read-only AMD RAPL energy-counter samples through the pinned PawnIO module, and fan RPM in Direct EC mode. CPU watts appear after the second sample and represent the average over the refresh interval. Missing power or RPM values leave the corresponding detail empty and do not invalidate temperature readings or affect Automatic control.
@@ -286,3 +286,7 @@ Windows uses its firmware API with temporary process-token privilege; Linux uses
 ### Windows Control Center 4.9 fan compatibility
 
 The exact installed 4.9.47.13 ACPI library is also supported on the validated board/SKU/BIOS and universal EC platform. Its inactive fan subsystem can be 0 or 3; activation preserves unrelated bits instead of replacing the entire subsystem byte. Stop the Control Center GUI and GCUBridge to use Direct EC, leaving the OEM driver and DLL installed. Uninstalling Control Center can remove those dependencies. The 2026-10-15 owner-authorized check confirmed Direct EC fan-table writes and RPM readings; sustained Auto and additional feature testing remain pending. [Analysis and observed state](cc_analysis/control-center-4.9-fans.md).
+
+### Slider interactions
+
+All slider drags (CPU/GPU fan duties, Automatic temperature thresholds, GPU power and lightbar RGB) preview the value without sending a setting while the handle is held. Pressing cancels a pending update for that control group; release sends only the final value after its short debounce. Queued callbacks also refuse to apply during a drag, so an earlier keyboard or wheel event cannot disable the panel mid-drag. Temperature spin-box focus changes use the same deferred commit. Low fan-duty confirmation remains required.
