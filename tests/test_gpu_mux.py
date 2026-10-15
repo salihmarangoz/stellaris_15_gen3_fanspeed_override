@@ -330,6 +330,29 @@ class MuxGuiTests(unittest.TestCase):
         finally:
             dialog.deleteLater()
 
+    def test_enter_saves_only_with_the_exact_phrase_and_never_cancels(self):
+        # Owner decision 2026-10-16: Enter after typing the phrase continues.
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from frontend.fan_control_gui import ExperimentalMuxConfirmation
+        for text, expected in (("yes do it", None), ("", None), ("YES DO IT", "accepted")):
+            with self.subTest(text=text):
+                dialog = ExperimentalMuxConfirmation(None)
+                outcome = []
+                dialog.accepted.connect(lambda: outcome.append("accepted"))
+                dialog.rejected.connect(lambda: outcome.append("rejected"))
+                try:
+                    dialog.show()
+                    dialog.confirmation_text.setFocus()
+                    dialog.confirmation_text.setText(text)
+                    QTest.keyClick(dialog.confirmation_text, Qt.Key.Key_Return)
+                    self.app.processEvents()
+                    self.assertEqual(outcome, [expected] if expected else [])
+                finally:
+                    dialog.close()
+                    dialog.deleteLater()
+                    self.app.processEvents()
+
     def test_cancel_at_either_stage_never_calls_backend(self):
         from PySide6.QtWidgets import QMessageBox, QDialog
         from frontend.fan_control_gui import MUX_SAVE_TIMEOUT_SECONDS, FanControlWindow

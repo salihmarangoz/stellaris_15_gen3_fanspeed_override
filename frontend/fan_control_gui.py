@@ -404,11 +404,13 @@ class ExperimentalMuxConfirmation(QDialog):
         actions = QHBoxLayout()
         actions.addStretch()
         cancel = QPushButton("Cancel")
-        cancel.setDefault(True)
         cancel.clicked.connect(self.reject)
         actions.addWidget(cancel)
+        # Enter in the phrase field saves only once the exact phrase is typed
+        # (a disabled default button ignores Enter); Esc and Cancel cancel.
+        # A focused Cancel button still takes Enter itself (autoDefault).
         self.confirm_button = QPushButton("Save experimental MUX setting")
-        self.confirm_button.setAutoDefault(False)
+        self.confirm_button.setDefault(True)
         self.confirm_button.setEnabled(False)
         self.confirm_button.clicked.connect(self.accept)
         self.confirmation_text.textChanged.connect(
