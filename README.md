@@ -241,7 +241,7 @@ The Linux version runs on Ubuntu 24.04 without TUXEDO Control Center, without ex
    sudo ./scripts/linux/install.sh
    ```
 
-   If TUXEDO's `tccd` is enabled, the installer asks to disable it (add `--yes` to accept without asking). It checks the laptop, copies the application to `/opt/stellaris-fan-control`, creates a PySide6 environment for the GUI (downloaded from PyPI), allows only your user to control the service, installs and enables the systemd unit and the resume hook, adds GUI autostart for your login, enables `nvidia-powerd` if it is not running (installing its unit and D-Bus policy when Ubuntu's driver package lacks them), and starts the service in Automatic mode. Rerun it to update; quit the GUI first so the new version opens next time.
+   If TUXEDO's `tccd` is enabled, the installer asks to disable it (add `--yes` to accept without asking). It checks the laptop, copies the application to `/opt/stellaris-fan-control`, creates a PySide6 environment for the GUI (downloaded from PyPI), allows only your user to control the service, installs and enables the systemd unit and the resume hook, installs the polkit rule that asks for a password before an NVIDIA Optimus change, adds GUI autostart for your login, enables `nvidia-powerd` if it is not running (installing its unit and D-Bus policy when Ubuntu's driver package lacks them), and starts the service in Automatic mode. Rerun it to update; quit the GUI first so the new version opens next time.
 
 3. Open **Stellaris Fan Control** from the application menu or log in again. `journalctl -u stellaris-fan-control` shows the service log.
 
@@ -277,11 +277,11 @@ Every write first saves a `LINUX_EC-*.json` backup in `/var/lib/stellaris-fan-co
 
 ## Experimental NVIDIA Optimus / MUX selection
 
-A separate **NVIDIA Optimus** panel to the right of **GPU power limit** opens a window to select Hybrid/Optimus or NVIDIA dGPU for the next boot. Saving asks for a mode confirmation and a second experimental-risk confirmation; the second requires exactly **YES DO IT**. Canceling either performs no write. The application never reboots automatically.
+A separate **NVIDIA Optimus** panel to the right of **GPU power limit** opens a window to select Hybrid/Optimus or NVIDIA dGPU for the next boot. Saving asks for a mode confirmation and a second experimental-risk confirmation; the second requires exactly **YES DO IT**. On Linux the system then asks for an administrator password (polkit, every time) when the mode actually changes. Canceling any step performs no write. The application never reboots automatically.
 
 This experimental feature has not been fully validated. It changes only OemDisplayMode at byte 0x62 of the exact 180-byte UniWillVariable, with platform/firmware checks, a full backup, concurrency checks, and readback verification. The saved mode may differ from the current display route until reboot. Stop OEM Control Center/GCUBridge or tccd before changing it. Its read-only display remains available while the OEM service runs. Opening the window, app startup and maintenance never write this setting.
 
-Windows uses its firmware API with temporary process-token privilege; Linux uses efivarfs through the existing root backend. Linux immutable/read-only protections are not removed automatically. Backups are stored in %LOCALAPPDATA%\StellarisFanControl\mux-backups on Windows and /var/lib/stellaris-fan-control/mux-backups on Linux. Custom-app writes and reboot behavior still require explicit target-hardware validation. [Confirmed protocol and analysis](cc_analysis/nvidia-optimus.md).
+Windows uses its firmware API with temporary process-token privilege; Linux uses efivarfs through the existing root backend. The kernel marks UniWillVariable immutable at every boot; after the confirmations and the password, the service lifts that flag for this one write and sets it again right after, so no `chattr` is needed. A read-only efivarfs mount is never changed. Backups are stored in %LOCALAPPDATA%\StellarisFanControl\mux-backups on Windows and /var/lib/stellaris-fan-control/mux-backups on Linux. Custom-app writes and reboot behavior still require explicit target-hardware validation. [Confirmed protocol and analysis](cc_analysis/nvidia-optimus.md).
 
 ### Windows Control Center 4.9 fan compatibility
 

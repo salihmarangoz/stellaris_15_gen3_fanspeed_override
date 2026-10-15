@@ -70,6 +70,8 @@ LIGHTBAR_COLORS = (("red", "Red"), ("green", "Green"), ("blue", "Blue"))
 DEFAULT_LIGHTBAR_MAX_LEVEL = 36
 LIGHTBAR_APPLY_DELAY_MS = 300
 LIGHTBAR_RETRY_MS = 300
+# On Linux the service waits up to 150 s for the polkit password before a MUX write.
+MUX_SAVE_TIMEOUT_SECONDS = 180.0
 
 
 class FanCurveGraph(QWidget):
@@ -1964,10 +1966,12 @@ class FanControlWindow(QMainWindow):
 
         self._run(
             lambda: self._backend.request(
-                "set_mux", mode=mode, confirmed=True, confirmation_text=confirmation_text
+                "set_mux", mode=mode, confirmed=True, confirmation_text=confirmation_text,
+                request_timeout=MUX_SAVE_TIMEOUT_SECONDS,
             ),
             complete,
-            "Saving NVIDIA Optimus firmware setting...",
+            "Saving NVIDIA Optimus firmware setting..." if os.name == "nt"
+            else "Enter your password in the system dialog to save the NVIDIA Optimus setting...",
             on_failed=self.optimus_window.show_error,
         )
 

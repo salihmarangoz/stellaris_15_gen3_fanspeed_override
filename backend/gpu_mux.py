@@ -1,8 +1,10 @@
 """Experimental MUX selection through the OEM's one UEFI display-mode byte."""
 
+import array
 import ctypes
 import hashlib
 import json
+import logging
 import os
 import struct
 import threading
@@ -22,6 +24,12 @@ EXPECTED_PROJECT_ID = 0x10
 MODE_VALUES = {"hybrid": 0, "dgpu": 1}
 EXPECTED_DSDT = "b35bf53709db9ac190ce13489619ffcf7793b78b65c7888d76e25ffc49eaea62"
 EFIVAR_PATH = Path("/sys/firmware/efi/efivars") / f"{VARIABLE_NAME}-{VARIABLE_GUID}"
+# linux/fs.h inode flags ioctls (what chattr uses); efivarfs supports the immutable flag.
+FS_IOC_GETFLAGS = 0x80086601
+FS_IOC_SETFLAGS = 0x40086602
+FS_IMMUTABLE_FL = 0x00000010
+
+LOGGER = logging.getLogger("stellaris15gen3")
 
 
 class FirmwareTransport(Protocol):
@@ -76,21 +84,48 @@ class LinuxFirmwareTransport:
         return struct.unpack_from("<I", raw)[0], raw[4:]
 
     def write(self, attributes: int, data: bytes) -> None:
-        # efivarfs expects attributes before the complete variable value. Do not
-        # remove an immutable flag, recreate/delete the variable, or retry writes.
+        # efivarfs expects attributes before the complete variable value. The
+        # kernel marks this vendor variable immutable at every boot; this write
+        # runs only after both confirmations and the polkit password, so lift
+        # the flag for this one write and put it back. Never recreate/delete the
+        # variable or retry writes.
         if attributes != VARIABLE_ATTRIBUTES or len(data) != VARIABLE_SIZE:
             raise ValueError("Refusing an invalid MUX variable write")
         payload = struct.pack("<I", attributes) + data
         try:
-            with self.path.open("r+b", buffering=0) as stream:
-                if stream.write(payload) != len(payload):
-                    raise OSError("Incomplete efivarfs write")
+            with self.path.open("rb", buffering=0) as guard:
+                flags = self._get_flags(guard.fileno())
+                immutable = bool(flags & FS_IMMUTABLE_FL)
+                if immutable:
+                    self._set_flags(guard.fileno(), flags & ~FS_IMMUTABLE_FL)
+                try:
+                    with self.path.open("r+b", buffering=0) as stream:
+                        if stream.write(payload) != len(payload):
+                            raise OSError("Incomplete efivarfs write")
+                finally:
+                    if immutable:
+                        try:
+                            self._set_flags(guard.fileno(), flags)
+                        except OSError as exc:
+                            LOGGER.warning("Could not restore the immutable flag of %s (%s); "
+                                           "the kernel sets it again at the next boot", self.path, exc)
         except PermissionError as exc:
             raise RuntimeError(
-                "Cannot write the MUX firmware variable. Root access is required; "
-                "efivarfs may be read-only or the variable may be immutable. "
-                "No firmware protection was removed."
+                "Cannot write the MUX firmware variable. Root access is required, "
+                "or efivarfs is mounted read-only."
             ) from exc
+
+    @staticmethod
+    def _get_flags(descriptor: int) -> int:
+        import fcntl
+        flags = array.array("i", [0])
+        fcntl.ioctl(descriptor, FS_IOC_GETFLAGS, flags, True)
+        return flags[0]
+
+    @staticmethod
+    def _set_flags(descriptor: int, flags: int) -> None:
+        import fcntl
+        fcntl.ioctl(descriptor, FS_IOC_SETFLAGS, array.array("i", [flags]))
 
 
 class WindowsFirmwareTransport:
@@ -245,11 +280,22 @@ class FirmwareMux:
             os.fsync(stream.fileno())
         return path
 
-    def set_mode(self, mode: str, *, confirmed: bool, confirmation_text: str) -> dict[str, Any]:
+    def set_mode(
+        self, mode: str, *, confirmed: bool, confirmation_text: str,
+        authorize: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
         if type(mode) is not str or mode not in MODE_VALUES:
             raise ValueError("Select hybrid or dgpu mode")
         if confirmed is not True or type(confirmation_text) is not str or confirmation_text != "YES DO IT":
             raise PermissionError("Both MUX confirmations are required")
+        if authorize is not None:
+            # Ask for the password only when a write will follow, and outside the
+            # lock so a slow password dialog does not block state reads.
+            with self._lock:
+                self._refuse_writer()
+                _, current = self._validated_read()
+            if current[DISPLAY_MODE_OFFSET] != MODE_VALUES[mode]:
+                authorize()
         with self._lock:
             self._refuse_writer()
             attributes, before = self._validated_read()

@@ -12,6 +12,7 @@ ASSUME_YES=0
 APP_DIR=/opt/stellaris-fan-control
 CONFIG_DIR=/etc/stellaris-fan-control
 SERVICE=stellaris-fan-control
+POLKIT_ACTION=io.github.salihmarangoz.stellarisfancontrol
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -78,6 +79,8 @@ chmod 644 "$CONFIG_DIR/config.json"
 
 install -m 644 "$SOURCE_DIR/scripts/linux/stellaris-fan-control.service" "/etc/systemd/system/$SERVICE.service"
 install -m 755 "$SOURCE_DIR/scripts/linux/stellaris-fan-control-sleep" "/usr/lib/systemd/system-sleep/$SERVICE"
+# The service asks polkit for an administrator password before each MUX firmware write.
+install -m 644 "$SOURCE_DIR/scripts/linux/$POLKIT_ACTION.policy" "/usr/share/polkit-1/actions/$POLKIT_ACTION.policy"
 install -m 644 "$SOURCE_DIR/scripts/linux/stellaris-fan-control.desktop" "/usr/share/applications/$SERVICE.desktop"
 # Create the user's autostart directory as that user so no parent becomes root-owned.
 sudo -u "$TARGET_USER" mkdir -p "$TARGET_HOME/.config/autostart"

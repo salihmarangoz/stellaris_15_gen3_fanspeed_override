@@ -48,6 +48,7 @@ Last reviewed: 2026-10-13
 |   |-- linux_sensors.py         Linux k10temp, NVIDIA, and RAPL readings
 |   |-- linux_fan_service.py     Linux service singleton, drift repair, backups, cTGP, lightbar
 |   |-- linux_backend.py         Linux root service runtime and peer-credential socket
+|   |-- linux_polkit.py          polkit password check (pkcheck) before a Linux MUX write
 |   |-- linux_fan_control.py     Linux low-level CLI (read-only probe, dry-run writes)
 |   `-- requirements.txt         Windows backend runtime dependencies
 |-- shared\
@@ -64,6 +65,7 @@ Last reviewed: 2026-10-13
 |   |-- test_windows_gpu_power.py cTGP gates, NVIDIA limits, verified writes, OEM refusal, persistence
 |   |-- test_packaged_startup.py real Qt check that must not import hardware backends
 |   |-- test_icons.py            committed icons match the generator and render
+|   |-- test_linux_polkit.py     mocked pkcheck subject, refusals, timeout, and /proc start time
 |   `-- test_linux_backend.py    fake-EC/sysfs Linux client, sensor, safety, and IPC tests
 |-- scripts\
 |   |-- launch_fan_control.ps1   source setup and normal-user launcher
@@ -81,6 +83,7 @@ Last reviewed: 2026-10-13
 |       |-- package_release.sh   Linux source archive and SHA-256 checksum
 |       |-- nvidia-powerd.service  NVIDIA daemon unit installed when Ubuntu lacks it
 |       |-- nvidia-dbus.conf     D-Bus policy for nvidia-powerd
+|       |-- io.github.salihmarangoz.stellarisfancontrol.policy  polkit action: password before a MUX write
 |       `-- stress_test.py       180 s CPU+GPU load with live service monitoring
 |-- requirements.txt             source/runtime Python dependencies
 |-- requirements-build.txt       packaging dependencies
@@ -149,6 +152,7 @@ Linux runtime paths:
 /etc/stellaris-fan-control/config.json   allowed_uids for the service socket
 /etc/systemd/system/stellaris-fan-control.service
 /usr/lib/systemd/system-sleep/stellaris-fan-control
+/usr/share/polkit-1/actions/io.github.salihmarangoz.stellarisfancontrol.policy
 /usr/share/applications/stellaris-fan-control.desktop
 ~/.config/autostart/stellaris-fan-control.desktop
 ~/.config/stellaris-fan-control/StellarisFanControl.json   GUI preferences
@@ -194,8 +198,9 @@ The installer also accepts `StellarisFanControl.exe` at the root of an extracted
 
 ## Firmware MUX and OEM analysis
 
-- backend/gpu_mux.py: experimental, gated Windows UEFI / Linux efivarfs MUX adapter; one explicit confirmed save, backup and verification.
-- tests/test_gpu_mux.py: mocked firmware safety, byte preservation, concurrency, backup, efivarfs framing and two-stage/exact-text GUI checks.
+- backend/gpu_mux.py: experimental, gated Windows UEFI / Linux efivarfs MUX adapter; one explicit confirmed save, optional authorizer (Linux polkit password), backup, verification; on Linux lifts and restores the efivarfs immutable flag around that one write.
+- backend/linux_polkit.py: the Linux authorizer; pkcheck for the requesting process, which PeerCredentialServer records per request thread.
+- tests/test_gpu_mux.py: mocked firmware safety, byte preservation, concurrency, backup, password ordering, efivarfs framing and immutable-flag handling, and two-stage/exact-text GUI checks.
 - cc_analysis/: tracked Control Center interoperability findings. nvidia-optimus.md records the recovered MUX contract; proprietary raw images/code stay ignored under build/oem-analysis/mux.
 - Runtime MUX backups: %LOCALAPPDATA%\StellarisFanControl\mux-backups (Windows), /var/lib/stellaris-fan-control/mux-backups (Linux); never startup write triggers.
 

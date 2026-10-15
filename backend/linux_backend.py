@@ -9,7 +9,7 @@ import struct
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from shared.fan_control_common import (
     AUTO_INTERVAL_SECONDS,
@@ -20,6 +20,7 @@ from shared.fan_control_ipc import linux_socket_path
 from backend.fan_control_backend import BackendController, BackendRequestHandler
 from backend.linux_ec import validate_lightbar
 from backend.linux_fan_service import state_directory
+from backend.linux_polkit import authorize_process
 
 
 LOGGER = logging.getLogger("stellaris15gen3")
@@ -28,6 +29,10 @@ SETTINGS_FILENAME = "settings.json"
 LOCK_FILENAME = "backend.lock"
 MAINTENANCE_INTERVAL_SECONDS = AUTO_INTERVAL_SECONDS
 REQUEST_SOCKET_TIMEOUT_SECONDS = 30.0
+
+# Each IPC request runs in its own server thread: authorize() records the
+# kernel-reported peer there and the MUX authorizer reads it in that thread.
+_REQUEST_PEER = threading.local()
 
 
 def config_path() -> Path:
@@ -166,6 +171,13 @@ class LinuxBackendController(BackendController):
         self._save_settings()
         return result
 
+    def _mux_authorizer(self) -> Callable[[], None]:
+        peer = getattr(_REQUEST_PEER, "value", None)
+        if peer is None:
+            raise PermissionError("Unknown requesting process; no MUX write was performed")
+        pid, uid = peer
+        return lambda: authorize_process(pid, uid)
+
     def request_resync(self) -> None:
         # Safe from a signal handler: only sets events.
         self._resync_requested.set()
@@ -249,9 +261,10 @@ class PeerCredentialServer(socketserver.ThreadingUnixStreamServer):
         credentials = connection.getsockopt(
             socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
         )
-        _pid, uid, _gid = struct.unpack("3i", credentials)
+        pid, uid, _gid = struct.unpack("3i", credentials)
         if uid not in self.allowed_uids:
             raise PermissionError("This user is not allowed to control the fan service")
+        _REQUEST_PEER.value = (pid, uid)
 
 
 def acquire_process_lock(directory: Path) -> Any:

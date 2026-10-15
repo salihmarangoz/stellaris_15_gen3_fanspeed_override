@@ -645,7 +645,7 @@ class LinuxFanServiceTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux service only")
 class PeerCredentialIpcTests(unittest.TestCase):
-    def run_server(self, allowed_uids: frozenset[int]):
+    def run_server(self, allowed_uids: frozenset[int], controller=None):
         from backend.linux_backend import PeerCredentialServer
 
         class PingController:
@@ -654,7 +654,7 @@ class PeerCredentialIpcTests(unittest.TestCase):
 
         directory = TemporaryDirectory()
         path = Path(directory.name) / "backend.sock"
-        server = PeerCredentialServer(path, PingController(), allowed_uids)
+        server = PeerCredentialServer(path, controller or PingController(), allowed_uids)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         return directory, path, server, thread
@@ -680,6 +680,47 @@ class PeerCredentialIpcTests(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=2.0)
                 directory.cleanup()
+
+    def test_mux_password_check_targets_the_requesting_process(self) -> None:
+        from backend.linux_backend import LinuxBackendController
+        from shared.fan_control_ipc import BackendClient
+
+        class MuxController:
+            def dispatch(self, command: str, arguments: dict) -> str:
+                LinuxBackendController._mux_authorizer(self)()
+                return "authorized"
+
+        directory, path, server, thread = self.run_server(frozenset({os.getuid()}), MuxController())
+        try:
+            with patch("backend.linux_backend.authorize_process") as authorize, patch.dict(
+                os.environ, {"STELLARIS15GEN3_SOCKET": str(path)}
+            ):
+                client = BackendClient(timeout=2.0, transport="unix")
+                self.assertEqual(client.request("set_mux"), "authorized")
+            # The kernel-reported peer of the request, i.e. this test process.
+            authorize.assert_called_once_with(os.getpid(), os.getuid())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2.0)
+            directory.cleanup()
+
+    def test_mux_authorizer_fails_closed_without_a_recorded_peer(self) -> None:
+        from backend.linux_backend import LinuxBackendController
+
+        errors = []
+
+        def outside_a_request() -> None:
+            try:
+                LinuxBackendController._mux_authorizer(object())
+            except PermissionError as exc:
+                errors.append(str(exc))
+
+        worker = threading.Thread(target=outside_a_request)
+        worker.start()
+        worker.join(timeout=2.0)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("no MUX write", errors[0])
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux service only")

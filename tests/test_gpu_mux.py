@@ -2,6 +2,7 @@ import json
 import os
 import struct
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -136,6 +137,88 @@ class FirmwareMuxTests(unittest.TestCase):
                 self.save()
         self.assertEqual(self.io.writes, [])
 
+    def test_password_is_asked_once_before_any_backup_or_write(self):
+        seen = []
+        authorize = Mock(side_effect=lambda: seen.append(
+            (len(self.io.writes), len(list(Path(self.directory.name).iterdir())))))
+        self.assertTrue(self.save(authorize=authorize)["changed"])
+        authorize.assert_called_once_with()
+        self.assertEqual(seen, [(0, 0)])
+        self.assertEqual(len(self.io.writes), 1)
+
+    def test_no_password_prompt_when_the_mode_is_already_saved(self):
+        authorize = Mock()
+        self.assertFalse(self.save("hybrid", authorize=authorize)["changed"])
+        authorize.assert_not_called()
+        self.assertEqual(self.io.writes, [])
+
+    def test_denied_password_prevents_backup_and_write(self):
+        authorize = Mock(side_effect=PermissionError("The password dialog was cancelled"))
+        with self.assertRaisesRegex(PermissionError, "cancelled"):
+            self.save(authorize=authorize)
+        self.assertEqual(self.io.writes, [])
+        self.assertEqual(list(Path(self.directory.name).iterdir()), [])
+
+    def test_password_is_not_asked_without_confirmations_or_with_another_writer(self):
+        authorize = Mock()
+        with self.assertRaises(PermissionError):
+            self.save(confirmation_text="yes do it", authorize=authorize)
+        self.conflict.return_value = True
+        with self.assertRaisesRegex(RuntimeError, "GCUBridge"):
+            self.save(authorize=authorize)
+        authorize.assert_not_called()
+        self.assertEqual(self.io.writes, [])
+
+    def linux_variable(self, flags):
+        path = Path(self.directory.name) / "variable"
+        path.write_bytes(struct.pack("<I", 7) + firmware_blob())
+        state = {"flags": flags}
+        calls = []
+
+        def set_flags(descriptor, value):
+            calls.append(value)
+            state["flags"] = value
+
+        patches = (patch.object(LinuxFirmwareTransport, "_get_flags", side_effect=lambda d: state["flags"]),
+                   patch.object(LinuxFirmwareTransport, "_set_flags", side_effect=set_flags))
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        io = LinuxFirmwareTransport(path)
+        attributes, data = io.read()
+        changed = bytearray(data)
+        changed[DISPLAY_MODE_OFFSET] = 1
+        return path, io, calls, attributes, bytes(changed)
+
+    def test_linux_immutable_flag_is_lifted_only_for_the_write_and_restored(self):
+        path, io, calls, attributes, changed = self.linux_variable(0x10 | 0x80000)
+        io.write(attributes, changed)
+        self.assertEqual(calls, [0x80000, 0x10 | 0x80000])
+        self.assertEqual(path.read_bytes()[4 + DISPLAY_MODE_OFFSET], 1)
+
+    def test_linux_flags_are_untouched_when_the_variable_is_not_immutable(self):
+        path, io, calls, attributes, changed = self.linux_variable(0x80000)
+        io.write(attributes, changed)
+        self.assertEqual(calls, [])
+        self.assertEqual(path.read_bytes()[4 + DISPLAY_MODE_OFFSET], 1)
+
+    def test_linux_immutable_flag_is_restored_when_the_write_fails(self):
+        if os.name == "nt" or os.geteuid() == 0:
+            self.skipTest("needs POSIX file permissions that apply to this user")
+        path, io, calls, attributes, changed = self.linux_variable(0x10)
+        path.chmod(0o400)
+        with self.assertRaisesRegex(RuntimeError, "Root access"):
+            io.write(attributes, changed)
+        self.assertEqual(calls, [0, 0x10])
+
+    def test_linux_restore_failure_is_logged_and_the_saved_value_stands(self):
+        path, io, calls, attributes, changed = self.linux_variable(0x10)
+        LinuxFirmwareTransport._set_flags.side_effect = [None, OSError("busy")]
+        with self.assertLogs("stellaris15gen3", "WARNING") as logs:
+            io.write(attributes, changed)
+        self.assertIn("next boot", logs.output[0])
+        self.assertEqual(path.read_bytes()[4 + DISPLAY_MODE_OFFSET], 1)
+
     def test_linux_bios_version_must_match_even_when_dsdt_matches(self):
         from backend.gpu_mux import validate_platform
         with patch("backend.gpu_mux.os.name", "posix"), patch(
@@ -157,7 +240,10 @@ class FirmwareMuxTests(unittest.TestCase):
         attrs, data = io.read()
         changed = bytearray(data)
         changed[DISPLAY_MODE_OFFSET] = 1
-        io.write(attrs, bytes(changed))
+        # Linux exercises the real inode-flags ioctl on the temporary file; Windows CI has no fcntl.
+        flags = patch.object(LinuxFirmwareTransport, "_get_flags", return_value=0) if os.name == "nt" else nullcontext()
+        with flags:
+            io.write(attrs, bytes(changed))
         after = path.read_bytes()
         self.assertEqual([i for i in range(len(before)) if before[i] != after[i]], [4 + 0x62])
         path.write_bytes(b"bad")
@@ -185,7 +271,7 @@ class MuxGuiTests(unittest.TestCase):
 
     def test_cancel_at_either_stage_never_calls_backend(self):
         from PySide6.QtWidgets import QMessageBox, QDialog
-        from frontend.fan_control_gui import FanControlWindow
+        from frontend.fan_control_gui import MUX_SAVE_TIMEOUT_SECONDS, FanControlWindow
         for first, second, text, expected in (
             (QMessageBox.StandardButton.Cancel, QDialog.DialogCode.Accepted, "YES DO IT", False),
             (QMessageBox.StandardButton.Yes, QDialog.DialogCode.Rejected, "YES DO IT", False),
@@ -211,7 +297,8 @@ class MuxGuiTests(unittest.TestCase):
                             window.apply_optimus()
                         if expected:
                             backend.request.assert_called_once_with("set_mux", mode="dgpu", confirmed=True,
-                                                                    confirmation_text="YES DO IT")
+                                                                    confirmation_text="YES DO IT",
+                                                                    request_timeout=MUX_SAVE_TIMEOUT_SECONDS)
                         else:
                             backend.request.assert_not_called()
                         self.assertEqual(question.call_args.args[-1], QMessageBox.StandardButton.Cancel)

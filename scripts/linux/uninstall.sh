@@ -14,7 +14,8 @@ fi
 systemctl disable --now "$SERVICE.service" 2>/dev/null || true
 rm -f "/etc/systemd/system/$SERVICE.service" \
       "/usr/lib/systemd/system-sleep/$SERVICE" \
-      "/usr/share/applications/$SERVICE.desktop"
+      "/usr/share/applications/$SERVICE.desktop" \
+      /usr/share/polkit-1/actions/io.github.salihmarangoz.stellarisfancontrol.policy
 systemctl daemon-reload
 rm -rf /opt/stellaris-fan-control /etc/stellaris-fan-control
 if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then

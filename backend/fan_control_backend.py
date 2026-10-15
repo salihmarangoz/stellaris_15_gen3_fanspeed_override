@@ -6,7 +6,7 @@ import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from backend.gpu_mux import FirmwareMux
 
@@ -156,6 +156,7 @@ class BackendController:
                 arguments["mode"],
                 confirmed=arguments.get("confirmed") is True,
                 confirmation_text=arguments.get("confirmation_text"),
+                authorize=self._mux_authorizer(),
             ),
             "read_lightbar": self.read_lightbar,
             "set_lightbar": lambda: self.set_lightbar(
@@ -376,6 +377,10 @@ class BackendController:
         if not callable(set_offset):
             raise RuntimeError("GPU power limit control is not available on this platform")
         return set_offset(offset)
+
+    def _mux_authorizer(self) -> Callable[[], None] | None:
+        # The Windows backend already runs elevated after UAC; Linux asks polkit.
+        return None
 
     def read_lightbar(self) -> dict[str, Any]:
         lightbar_state = getattr(self._service, "lightbar_state", None)
