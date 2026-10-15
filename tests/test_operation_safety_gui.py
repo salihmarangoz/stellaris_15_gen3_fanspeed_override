@@ -39,6 +39,8 @@ class DeadlineGuiTests(unittest.TestCase):
                 patch.object(FanControlWindow, "_settings_path", return_value=Path(directory) / "settings.json"), \
                 patch("frontend.fan_control_gui.launch_component") as launch:
             window = FanControlWindow(backend=client)
+            # The in-process backend is the Windows model; Linux talks to a root service.
+            window._linux = False
             window._telemetry_timer.stop()
             window._backend_watchdog_timer.stop()
             try:
