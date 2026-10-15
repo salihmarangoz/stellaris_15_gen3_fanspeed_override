@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import threading
 import time
@@ -18,6 +19,7 @@ from backend.linux_sensors import NvidiaLimits, last_nvidia_limits, last_nvidia_
 
 
 T = TypeVar("T")
+LOGGER = logging.getLogger("stellaris15gen3")
 DEFAULT_STATE_DIRECTORY = Path("/var/lib/stellaris-fan-control")
 TABLE_NAME = "LINUX_EC"
 # The lightbar may forget its state without the bytes changing, so the saved
@@ -150,10 +152,19 @@ class LinuxFanService:
         return self._execute(lambda client: client.fan_info())
 
     def apply_manual(
-        self, cpu: int, gpu: int, *, create_backup: bool = True
+        self, cpu: int, gpu: int, *, create_backup: bool = True, backup_required: bool = True
     ) -> dict[str, Any]:
         def operation(client: LinuxEcClient) -> dict[str, Any]:
-            backup = save_backup(client.snapshot()) if create_backup else None
+            backup = None
+            if create_backup:
+                snapshot = client.snapshot()
+                try:
+                    backup = save_backup(snapshot)
+                except OSError as exc:
+                    # A full or read-only disk must not stop Automatic control.
+                    if backup_required:
+                        raise
+                    LOGGER.warning("Could not save the fan backup (%s); writing the fans anyway", exc)
             client.apply_duties(cpu, gpu)
             self._desired_duties = (cpu, gpu)
             self._desired_boost = False

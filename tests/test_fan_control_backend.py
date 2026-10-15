@@ -43,7 +43,7 @@ class FakeService:
         self.write_event = threading.Event()
 
     def apply_manual(
-        self, cpu: int, gpu: int, *, create_backup: bool = True
+        self, cpu: int, gpu: int, *, create_backup: bool = True, backup_required: bool = True
     ) -> dict[str, object]:
         self.writes.append((cpu, gpu, create_backup))
         self.write_event.set()
@@ -180,7 +180,7 @@ class BackendSafetyTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             controller.dispatch("prepare_exit", {"confirmed": False})
         result = controller.dispatch("prepare_exit", {"confirmed": True})
-        self.assertEqual(service.writes, [(100, 100, True)])
+        self.assertEqual(service.writes, [(100, 100, False)])  # exit writes take no backup
         self.assertEqual((result["cpu"], result["gpu"]), (100, 100))
         self.assertFalse(controller._snapshot()["automatic"])
 
@@ -196,7 +196,7 @@ class BackendSafetyTests(unittest.TestCase):
         self.assertTrue(controller._automatic)
         controller.prepare_exit(confirmed=True)
         self.assertFalse(controller._automatic)
-        self.assertEqual(service.writes, [(100, 100, True)])
+        self.assertEqual(service.writes, [(100, 100, False)])  # exit writes take no backup
 
     def test_exit_during_sensor_read_prevents_later_auto_write(self) -> None:
         controller = BackendController()
@@ -210,7 +210,7 @@ class BackendSafetyTests(unittest.TestCase):
 
         with patch("backend.fan_control_backend.read_temperatures", side_effect=exit_during_read):
             controller._run_auto_cycle()
-        self.assertEqual(service.writes, [(100, 100, True)])
+        self.assertEqual(service.writes, [(100, 100, False)])  # exit writes take no backup
 
 
 class DirectEcTests(unittest.TestCase):

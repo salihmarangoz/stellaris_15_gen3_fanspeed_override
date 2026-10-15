@@ -63,6 +63,13 @@ The backend records the time of every successful, validated sensor read. A watch
 
 The sensor status has its own lock, which is never held while the state lock is acquired, so the watchdog cannot deadlock with the service-change path that reads sensors while holding the state lock.
 
+Fixed after the 2026-10-16 three-agent review:
+
+- The watchdog enters the emergency without consulting the cached Boost flag; `set_boost(True)` is idempotent. If the user's own Boost was already on, recovery leaves it on instead of restoring duties. Before, a stale cached flag disabled the emergency entirely.
+- Every duty write leaves EC Boost on both platforms (Windows calls `set_boost(False)`, Linux rewrites the tables), so `apply_manual` clears the cached Boost flag. Before, Boost, then a Manual write, then Automatic left Auto idle and the emergency disabled until a GUI reload.
+- `load_state` reads the EC under the state lock (state lock, then operation lock, the order used everywhere), so no write can land between the read and the cached Boost flag.
+- Backups never block a safety write: the Auto write treats a failed backup as a logged warning (`backup_required=False`), and the stop/exit 100% write takes no backup. User Manual writes still report a failed backup without writing.
+
 ## Linux design
 
 ```text

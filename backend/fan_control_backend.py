@@ -79,6 +79,8 @@ class BackendController:
         self._last_sensor_attempt: float | None = None
         self._last_sensor_error: str | None = None
         self._sensor_emergency = False
+        # The user's own Boost was already on when the sensors failed: keep it on recovery.
+        self._emergency_kept_user_boost = False
         self._last_written_duties: tuple[int, int] | None = None
         self._lightbar_thread: threading.Thread | None = None
         self._lightbar_error: str | None = None
@@ -291,14 +293,19 @@ class BackendController:
             stale = now - self._last_sensor_success >= SENSOR_STALE_TIMEOUT_SECONDS
         with self._state_lock:
             if stale:
-                if not self._sensor_emergency and not self._boost_enabled:
+                if not self._sensor_emergency:
                     # EC Fan Boost reaches 100% within seconds, unlike a table ramp.
+                    # Don't trust the cached Boost flag; set_boost(True) is idempotent.
                     self._service.set_boost(True)
                     self._sensor_emergency = True
+                    self._emergency_kept_user_boost = self._boost_enabled
                 return
             if not self._sensor_emergency:
                 return
-            if self._automatic:
+            if self._emergency_kept_user_boost:
+                # Boost was the user's choice before the failure; leave it on.
+                self._sensor_emergency = False
+            elif self._automatic:
                 # The next Auto cycle writes a validated target, which leaves Boost.
                 self._sensor_emergency = False
                 self._next_auto_at = now
@@ -331,11 +338,17 @@ class BackendController:
             self._refuse_during_sensor_emergency()
             result = self._service.apply_manual(cpu, gpu)
             self._last_written_duties = (cpu, gpu)
+            # A duty write leaves EC Boost on every platform; a stale True here
+            # would block Automatic and the sensor-loss Boost.
+            self._boost_enabled = False
         return result
 
     def load_state(self) -> dict[str, Any]:
-        result = self._service.load_state()
+        # Read under the state lock (state lock, then the service's operation
+        # lock, as everywhere) so a write cannot slip in between the EC read
+        # and the cached Boost flag.
         with self._state_lock:
+            result = self._service.load_state()
             # During a sensor emergency the EC Boost is ours, not the user's.
             if not self._sensor_emergency:
                 self._boost_enabled = str(result["status"]["FanBoostEnable"]) == "1"
@@ -460,7 +473,7 @@ class BackendController:
                 ):
                     return
                 self._service.apply_manual(
-                    target, target, create_backup=make_backup
+                    target, target, create_backup=make_backup, backup_required=False
                 )
                 self._last_written_duties = (target, target)
                 # A validated target replaces any sensor-emergency Boost.
@@ -506,7 +519,8 @@ class BackendController:
         if not confirmed:
             raise PermissionError("Application exit requires confirmation")
         with self._state_lock:
-            result = self._service.apply_manual(100, 100)
+            # No backup: a full or read-only disk must not block the 100% exit write.
+            result = self._service.apply_manual(100, 100, create_backup=False)
             self._last_written_duties = (100, 100)
             self._automatic = False
             self._boost_enabled = False

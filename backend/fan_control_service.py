@@ -1,5 +1,6 @@
 import ctypes
 import json
+import logging
 import os
 from pathlib import Path
 import threading
@@ -19,6 +20,7 @@ from shared.fan_control_common import LIGHTBAR_REFRESH_SECONDS, MAX_LIGHTBAR_LEV
 
 
 T = TypeVar("T")
+LOGGER = logging.getLogger("stellaris15gen3")
 GCU_BRIDGE_SERVICE = "GCUBridge"
 OEM_SERVICE_TIMEOUT_SECONDS = 20.0
 OEM_SHUTDOWN_CLEANUP_SECONDS = 5.0
@@ -417,13 +419,21 @@ class ControlCenterService:
         return self._execute(lambda client: client.fan_info())
 
     def apply_manual(
-        self, cpu: int, gpu: int, *, create_backup: bool = True
+        self, cpu: int, gpu: int, *, create_backup: bool = True, backup_required: bool = True
     ) -> dict[str, Any]:
         def operation(client: ControlCenterClient | DirectEcClient) -> dict[str, Any]:
             status = client.status()
             name = str(status["FAN_TableName"])
             existing = client.curve(name)
-            backup = save_backup(existing) if create_backup else None
+            backup = None
+            if create_backup:
+                try:
+                    backup = save_backup(existing)
+                except OSError as exc:
+                    # A full or read-only disk must not stop Automatic control.
+                    if backup_required:
+                        raise
+                    LOGGER.warning("Could not save the fan backup (%s); writing the fans anyway", exc)
             updated = fixed_curve(existing, cpu, gpu, include_idle=True)
             if client.method_name == "oem_mqtt":
                 save_oem_curve_cache(updated)

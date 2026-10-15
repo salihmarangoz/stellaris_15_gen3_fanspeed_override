@@ -125,3 +125,32 @@ The owner-operated official switch was correlated with only byte 0x62 of the 180
 ## HIGH - Complete Control Center 4.9 target validation
 
 The exact 4.9 DLL now passes a separate board/SKU/BIOS/universal-control gate. The owner-authorized 2026-10-15 test stopped the OEM service, started the custom source app, and confirmed direct uniform fan-table writes, preserved subsystem bits, and RPM. Long-duration Auto, recovery, shutdown, and cTGP/lightbar writes on this new image still need validation. See cc_analysis/control-center-4.9-fans.md. Keep unknown DLLs refused and retain the installed driver/DLL when stopping the OEM UI/service.
+
+## MEDIUM - Bound the Linux service's IPC against local resource exhaustion
+
+Review 2026-10-16: the socket is 0666 and `BackendRequestHandler` reads up to 64 KiB with a 30 s timeout before checking SO_PEERCRED, with no cap on handler threads. A local user outside the allow-list held enough connections in a scaled-down repro (64-descriptor limit) to make sysfs sensor reads and the tccd check fail with EMFILE, defeating Auto and the sensor-loss Boost. Check peer credentials right after accept (`verify_request`), cap concurrent handlers, shorten the read timeout, and raise `LimitNOFILE`.
+
+## MEDIUM - Validate 0x07C5 as a bitfield on Control Center 4.9
+
+Review 2026-10-16, unverified on hardware: on the 4.9 image `direct_fan_control.py` sets 0x07C5 to `previous | 0x80`, but the connect gate accepts only the listed fan-mode values. If 0x07C5 was 0x40 or 0x10 before, the result (0xC0, 0x90) fails the next connect, so later Auto, sensor-loss Boost and the exit write would all fail. Check the real values on target hardware, then validate the byte as a bitfield or refuse an activation whose result would fail the gate; add a reconnect-after-write test.
+
+## LOW - Manual-panel inconsistencies in the GUI
+
+Review 2026-10-16: switching Auto to Manual shows slider values that were never applied (the EC keeps the last Auto duty, and dragging back to the shown value sends nothing); and a slider release that happens while a background operation is running is dropped without a retry. Load the sliders from the last written duties on entering Manual, and keep a pending apply that re-runs when the busy state clears, as the lightbar path does.
+
+## LOW - Smaller safety and hardening gaps from the 2026-10-16 review
+
+- A request accepted just before service stop can write after the stop-time 100% write; set a stopping flag that refuses write commands first.
+- Windows writes 0x0741 as the whole byte 1 and its connect gate accepts only 0 or 1, so an EC status bit (fan-abnormal 0x20) would lock the app out during a fan fault; preserve and accept the other bits after checking them on hardware.
+- `backend.linux_fan_control boost off --apply` writes zone 0's duty to all zones without the 30% floor.
+- `install.sh` stops the service first; a later failure (for example `pip` without network) leaves fan control stopped with fans at 100% and no message. Add a trap that restarts it.
+- Linux `set_dynamic_boost` accepts non-boolean values (the string "false" counts as true); type-check it like Windows.
+- If sensors work but every Auto write fails, the last duty stays with no Boost fallback; consider Boost after N consecutive failed Auto writes.
+- Nothing prunes `fan-backups`.
+
+## LOW - MUX display and error-reporting gaps from the 2026-10-16 review
+
+- The "Please reboot" hint comes from an in-memory flag: it stays after switching back to the boot-time mode and is lost after a service or app restart. Compare the saved mode with the mode at boot instead (on Linux the AMD iGPU's presence also shows the active route).
+- If the transport write itself raises, there is no re-read and the message has no backup path; efivarfs can report an error after the variable was set. Re-read once (no retry) and report the saved mode and the backup.
+- On Windows `conflicting_writer()` only checks the GCUBridge broker port; check whether the Control Center GUI or its service can write UniWillVariable while the broker is stopped.
+- Request threads are daemon threads, so a `set_mux` still running at service stop is cut off mid-flow.

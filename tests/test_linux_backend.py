@@ -44,7 +44,7 @@ from backend.linux_sensors import (
     query_nvidia,
     read_cpu_temperature,
 )
-from shared.fan_control_common import SENSOR_STALE_TIMEOUT_SECONDS
+from shared.fan_control_common import SENSOR_STALE_TIMEOUT_SECONDS, auto_target
 
 
 # Register values read from the target laptop by the read-only probe.
@@ -388,7 +388,8 @@ class FakeLinuxService:
         self.writes: list[tuple[int, int, bool]] = []
         self.boost: list[bool] = []
 
-    def apply_manual(self, cpu: int, gpu: int, *, create_backup: bool = True) -> dict:
+    def apply_manual(self, cpu: int, gpu: int, *, create_backup: bool = True,
+                     backup_required: bool = True) -> dict:
         self.writes.append((cpu, gpu, create_backup))
         return {"cpu": cpu, "gpu": gpu, "backup": None, "table": "LINUX_EC"}
 
@@ -454,6 +455,57 @@ class ControllerSafetyTests(unittest.TestCase):
             controller.apply_manual(50, 50, confirmed_low=False)
         with self.assertRaisesRegex(RuntimeError, "Sensor failure"):
             controller.set_boost(False)
+
+    def test_a_manual_write_after_boost_lets_auto_run_again(self) -> None:
+        # Review finding: Boost on, then a Manual write (which leaves EC Boost),
+        # then Automatic used to stay idle because the cached Boost flag stayed on.
+        service = FakeLinuxService()
+        controller = controller_with(service)
+        controller.set_mode(False, 40, 80)
+        controller.set_boost(True)
+        controller.apply_manual(30, 30, confirmed_low=False)
+        self.assertFalse(controller._snapshot()["boost_enabled"])
+        controller.set_mode(True, 40, 80)
+        hot = SensorReadings(78.0, 70.0, "cpu", "gpu")
+        with patch("backend.fan_control_backend.read_temperatures", return_value=hot):
+            controller._run_auto_cycle()
+        target = auto_target(78.0, 40, 80)
+        self.assertEqual(service.writes[-1][:2], (target, target))
+
+    def test_stale_sensors_force_boost_even_if_boost_looks_on_and_keep_the_users_boost(self) -> None:
+        service = FakeLinuxService()
+        controller = controller_with(service)
+        controller.set_mode(False, 40, 80)
+        controller.set_boost(True)
+        with patch("backend.fan_control_backend.read_temperatures", side_effect=RuntimeError("gone")):
+            controller._last_sensor_success -= SENSOR_STALE_TIMEOUT_SECONDS
+            controller._check_sensors()
+        # Boost is asked again rather than trusting the cached flag.
+        self.assertEqual(service.boost, [True, True])
+        self.assertTrue(controller._snapshot()["sensor_emergency"])
+        controller._last_sensor_attempt = None  # the next watchdog tick reads again
+        with patch("backend.fan_control_backend.read_temperatures",
+                   return_value=SensorReadings(60.0, 50.0, "cpu", "gpu")):
+            controller._check_sensors()
+        # Recovery leaves the user's own Boost on: no duty write, no Boost off.
+        self.assertFalse(controller._snapshot()["sensor_emergency"])
+        self.assertEqual(service.writes, [])
+        self.assertEqual(service.boost, [True, True])
+
+    def test_load_state_reads_the_ec_under_the_state_lock(self) -> None:
+        service = FakeLinuxService()
+        controller = controller_with(service)
+        held = []
+
+        def load_state() -> dict:
+            held.append(controller._state_lock._is_owned())
+            return {"status": {"FanBoostEnable": "0"}}
+
+        service.load_state = load_state
+        with patch("backend.fan_control_backend.read_temperatures",
+                   return_value=SensorReadings(60.0, 50.0, "cpu", "gpu")):
+            controller.load_state()
+        self.assertEqual(held, [True])
 
     def test_recovery_in_auto_resumes_validated_targets(self) -> None:
         service = FakeLinuxService()
@@ -569,6 +621,21 @@ class LinuxFanServiceTests(unittest.TestCase):
         self.client.drifted = True
         self.assertEqual(self.service.maintain(), ["fan table"])
         self.assertEqual(self.client.duties[-1], (55, 65))
+
+    def test_backup_failures_do_not_block_auto_or_the_exit_write(self) -> None:
+        # Review finding: a full or read-only disk made every Auto cycle and the
+        # stop-time 100% write fail before touching the fans.
+        full = OSError(28, "No space left on device")
+        with patch("backend.linux_fan_service.save_backup", side_effect=full):
+            with self.assertRaises(OSError):
+                self.service.apply_manual(55, 65)  # a user write still reports it
+            self.assertEqual(self.client.duties, [])
+            with self.assertLogs("stellaris15gen3", "WARNING"):
+                self.service.apply_manual(70, 70, create_backup=True, backup_required=False)
+            self.assertEqual(self.client.duties[-1], (70, 70))
+            controller = controller_with(self.service)
+            controller.prepare_exit(confirmed=True)
+            self.assertEqual(self.client.duties[-1], (100, 100))
 
     def test_leaving_boost_without_a_target_uses_full_speed(self) -> None:
         self.service.set_boost(True)
