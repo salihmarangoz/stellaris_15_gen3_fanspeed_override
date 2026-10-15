@@ -1,5 +1,17 @@
 # TODO
 
+## HIGH - Keep emergency sensor monitoring independent of blocked hardware calls
+
+The 2026-10-16 safety review reproduced a stale-sensor watchdog waiting behind a blocked sensor read and, separately, a blocked EC write holding the controller state lock. The documented 30-second fallback does not cover those stalls. Evaluate freshness without waiting for a new read; design bounded or isolated hardware operations and recovery without overlapping EC owners. A frontend timeout cannot cancel a driver call or guarantee that Boost can use a hung actuator. Add bounded fault-injection regressions and validate the chosen recovery mechanism. See cc_analysis/windows-safety-review-2026-10-16.md.
+
+## HIGH - Escalate failed automatic fan writes to a control-output safety state
+
+With fresh simulated temperatures of CPU 95 C / GPU 85 C, a failed fan-table update only records an error and waits 15 seconds to retry; no guarded Boost attempt occurs. Add an actuator-failure condition, guarded emergency Boost, visible failure/retry status and verified recovery rules that do not allow lower targets to silently clear it. Cover rollback, Boost failure, OEM ownership changes and successful recovery with mocks. See cc_analysis/windows-safety-review-2026-10-16.md.
+
+## MEDIUM - Honor packaged operation deadlines without overlapping hardware owners
+
+InProcessBackendClient discards request_timeout. A stuck operation leaves the single GUI worker busy, disables Boost and Exit, and causes check_backend to skip recovery checks. Offscreen fault injection reproduced this. Add a defined deadline/stalled-operation state and an independently responsive interface while preserving one hardware owner and safe cancellation semantics. Session shutdown's outer 45-second wait does not cancel the stuck operation. See cc_analysis/windows-safety-review-2026-10-16.md.
+
 ## MEDIUM - Profile the remaining Windows Direct EC transaction time
 
 The 2026-10-16 listener-table change removed repeated 201 ms TCP timeouts without weakening per-byte OEM exclusion. Owner-authorized Manual tests measured Boost on/off at 88/69 ms, while a full fan-table update still takes 3.2-3.3 seconds through the OEM DLL with complete backup and readback. Profile driver reads/writes and frontend queue time before further changes. Keep transactions serialized, every ownership guard and complete verification/rollback; do not assume Linux direct-memory performance is attainable through this DLL. Live tests require explicit authorization and must honor the owner's requested fan floor. See cc_analysis/windows-direct-ec-latency.md.
