@@ -62,7 +62,6 @@ The switch clears or sets EC `0x0743` bit 1 like TUXEDO's `db_enable`, but its e
 
 On 2026-10-13, with Dynamic Boost on, a +0 W offset and `nvidia-powerd` running, an authorized 60-second GPU-only `stress_test.py --no-cpu` held `enforced.power.limit` at 140 W (115 W + 25 W boost) for the whole load, with 139-140 W draw, GPU 71 C, CPU 68 C and fans at 85%. At idle the limit returns to 115 W, which is NVIDIA's normal Dynamic Boost behavior. Turning the switch off, and persistence across restart, suspend and resume, remain unvalidated.
 
-
 ## MEDIUM - Validate the lightbar on battery, after suspend, and after reboot
 
 The lightbar registers (`0x0748` bit 7, `0x0749`-`0x074B`) were validated live only on AC power. The mainline driver also writes a battery-mode copy at `0x07E2`-`0x07E5` (all zero on 2026-09-29), which the service leaves alone. Unplug the charger and confirm whether the chosen color, rainbow, and off stay the same; if the lightbar changes, validate and add the battery copy. Also confirm that the choice returns within about 15 seconds after reboot and immediately after resume, whether the lightbar ever forgets its state without the bytes changing (the reason for the 15-minute rewrite), and what the EC shows while suspended (`0x0748` bit 3 is clear, which the mainline driver describes as the suspend breathing animation).
