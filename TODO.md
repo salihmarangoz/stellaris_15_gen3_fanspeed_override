@@ -62,9 +62,6 @@ The switch clears or sets EC `0x0743` bit 1 like TUXEDO's `db_enable`, but its e
 
 On 2026-10-13, with Dynamic Boost on, a +0 W offset and `nvidia-powerd` running, an authorized 60-second GPU-only `stress_test.py --no-cpu` held `enforced.power.limit` at 140 W (115 W + 25 W boost) for the whole load, with 139-140 W draw, GPU 71 C, CPU 68 C and fans at 85%. At idle the limit returns to 115 W, which is NVIDIA's normal Dynamic Boost behavior. Turning the switch off, and persistence across restart, suspend and resume, remain unvalidated.
 
-## HIGH - Validate the Linux MUX password flow on target hardware
-
-The Linux save asks polkit for an administrator password and lifts the efivarfs immutable flag of UniWillVariable only around its one write. Validated on 2026-10-16 00:19 (owner-run, installed 03c3e23): the GNOME password dialog appeared after YES DO IT, polkit logged a one-shot authorization for this action, and the save to Hybrid changed only data byte 0x62 (1 to 0). The flag was already cleared by hand that boot, so the lift/restore path did not run. Still to check: Cancel and a wrong password leave the variable and backups untouched; after a fresh boot (flag set again) a save works and `lsattr` shows `i` afterwards; the next boot uses the saved mode.
 
 ## MEDIUM - Validate the lightbar on battery, after suspend, and after reboot
 
