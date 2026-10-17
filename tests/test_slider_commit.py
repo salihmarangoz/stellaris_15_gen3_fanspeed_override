@@ -1,4 +1,5 @@
 import os
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -37,6 +38,13 @@ class SliderCommitTests(unittest.TestCase):
         self.window._gpu_power_apply_timer.stop(); self.window.lightbar_window.stop_pending_apply()
         self.window.tray_icon.hide(); self.window.deleteLater(); self.app.processEvents()
 
+    def wait_for_request(self):
+        # Windows coarse timers can fire the 20 ms debounce well after 40 ms.
+        deadline = time.monotonic() + 2.0
+        while not self.backend.request.called and time.monotonic() < deadline:
+            QTest.qWait(10)
+        QTest.qWait(40)  # a duplicate write would still arrive and fail the assertion
+
     def manual_mode(self, mirrored=False):
         with patch.object(self.window, '_mode_changed'):
             self.window.mode_toggle.setChecked(True)
@@ -62,7 +70,7 @@ class SliderCommitTests(unittest.TestCase):
                 self.assertFalse(self.window._busy)
                 self.assertTrue(slider.isEnabled())
                 slider.setSliderDown(False)
-                QTest.qWait(40)
+                self.wait_for_request()
                 self.backend.request.assert_called_once_with('apply_manual', cpu=cpu, gpu=gpu, confirmed_low=False)
 
     def test_mirrored_fans_preview_both_but_write_only_after_release(self):
@@ -72,7 +80,7 @@ class SliderCommitTests(unittest.TestCase):
         self.assertEqual(self.window.gpu_slider.value(), 67)
         QTest.qWait(40)
         self.backend.request.assert_not_called()
-        slider.setSliderDown(False); QTest.qWait(40)
+        slider.setSliderDown(False); self.wait_for_request()
         self.backend.request.assert_called_once_with('apply_manual', cpu=65, gpu=65, confirmed_low=False)
 
     def test_temperature_sliders_preview_then_configure_once_on_release(self):
@@ -87,26 +95,26 @@ class SliderCommitTests(unittest.TestCase):
                 QTest.qWait(40); self.window._configure_auto()
                 self.backend.request.assert_not_called()
                 self.assertTrue(slider.isEnabled())
-                slider.setSliderDown(False); QTest.qWait(40)
+                slider.setSliderDown(False); self.wait_for_request()
                 self.backend.request.assert_called_once_with('configure_auto', minimum_temp=self.window.min_temp_spin.value(), maximum_temp=self.window.max_temp_spin.value())
 
     def test_manual_step_actions_and_spin_commit_still_work(self):
         self.manual_mode()
         self.window.cpu_slider.triggerAction(QAbstractSlider.SliderAction.SliderSingleStepAdd)
-        QTest.qWait(40)
+        self.wait_for_request()
         self.backend.request.assert_called_once_with('apply_manual', cpu=55, gpu=50, confirmed_low=False)
         self.backend.reset_mock()
         self.window.cpu_spin.setValue(73); self.window.cpu_spin.editingFinished.emit()
-        QTest.qWait(40)
+        self.wait_for_request()
         self.backend.request.assert_called_once_with('apply_manual', cpu=75, gpu=50, confirmed_low=False)
 
     def test_temperature_keyboard_and_spin_commit_still_work(self):
         self.window.min_temp_slider.triggerAction(QAbstractSlider.SliderAction.SliderSingleStepAdd)
-        QTest.qWait(40)
+        self.wait_for_request()
         self.assertEqual(self.backend.request.call_args.args, ('configure_auto',))
         self.backend.reset_mock()
         self.window.min_temp_spin.setValue(42); self.window.min_temp_spin.editingFinished.emit()
-        QTest.qWait(40)
+        self.wait_for_request()
         self.backend.request.assert_called_once_with('configure_auto', minimum_temp=42, maximum_temp=self.window.max_temp_spin.value())
 
     def test_each_rgb_drag_blocks_timer_and_backend_until_release(self):
@@ -125,7 +133,7 @@ class SliderCommitTests(unittest.TestCase):
                     QTest.qWait(40)
                     lightbar._emit_apply_if_released(); self.window.apply_lightbar()
                     self.backend.request.assert_not_called()
-                    slider.setSliderDown(False); QTest.qWait(40)
+                    slider.setSliderDown(False); self.wait_for_request()
                     color = [s.value() for s in lightbar.color_sliders]
                     self.backend.request.assert_called_once_with('set_lightbar', mode='color', red=color[0], green=color[1], blue=color[2])
 
@@ -136,7 +144,7 @@ class SliderCommitTests(unittest.TestCase):
         slider.setSliderDown(True); slider.setSliderPosition(37)
         QTest.qWait(40); self.window.apply_gpu_power()
         self.backend.request.assert_not_called()
-        slider.setSliderDown(False); QTest.qWait(40)
+        slider.setSliderDown(False); self.wait_for_request()
         self.backend.request.assert_called_once_with('set_gpu_power', offset=35)
 
     def test_real_keyboard_and_wheel_events_still_commit_without_dragging(self):
@@ -145,12 +153,12 @@ class SliderCommitTests(unittest.TestCase):
         self.manual_mode()
         slider = self.window.cpu_slider
         QTest.keyClick(slider, Qt.Key.Key_Right)
-        QTest.qWait(40)
+        self.wait_for_request()
         self.backend.request.assert_called_once_with('apply_manual', cpu=55, gpu=50, confirmed_low=False)
         self.backend.reset_mock()
         wheel = QWheelEvent(QPointF(5,5), QPointF(5,5), QPoint(0,0), QPoint(0,120), Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
         self.app.sendEvent(slider, wheel)
-        QTest.qWait(40)
+        self.wait_for_request()
         self.assertGreater(slider.value(), 55)
         self.backend.request.assert_called_once_with('apply_manual', cpu=slider.value(), gpu=50, confirmed_low=False)
 
@@ -161,5 +169,5 @@ class SliderCommitTests(unittest.TestCase):
         slider.setSliderDown(True); slider.setSliderPosition(44)
         QTest.qWait(40)
         self.backend.request.assert_not_called()
-        slider.setSliderDown(False); QTest.qWait(40)
+        slider.setSliderDown(False); self.wait_for_request()
         self.backend.request.assert_called_once_with('configure_auto', minimum_temp=44, maximum_temp=self.window.max_temp_spin.value())
