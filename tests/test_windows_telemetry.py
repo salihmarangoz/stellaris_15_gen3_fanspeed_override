@@ -1,6 +1,7 @@
 import subprocess
 import os
 import sys
+import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -8,7 +9,13 @@ from unittest.mock import Mock, patch
 
 from backend.fan_control_backend import BackendController
 from backend.fan_control_service import ControlCenterService, load_lightbar_choice
-from backend.temperature_service import Temperatures, read_power_draw, read_temperatures
+from backend.temperature_service import (
+    Temperatures,
+    read_cpu_power_draw,
+    read_gpu_power_draw,
+    read_nvidia_temperature,
+    read_temperatures,
+)
 
 
 class PowerTelemetryTests(unittest.TestCase):
@@ -36,8 +43,7 @@ class PowerTelemetryTests(unittest.TestCase):
             with self.subTest(output=output), patch(
                 "backend.temperature_service._run_hidden", return_value=output
             ) as run:
-                result = read_power_draw()
-                self.assertEqual(result["cpu_power_w"], None)
+                result = read_gpu_power_draw()
                 self.assertEqual(result["gpu_power_w"], expected)
                 self.assertEqual(run.call_args.kwargs["timeout"], 2)
                 self.assertIn("--query-gpu=power.draw,clocks_throttle_reasons.sw_thermal_slowdown",
@@ -50,7 +56,7 @@ class PowerTelemetryTests(unittest.TestCase):
             with self.subTest(output=output), patch(
                 "backend.temperature_service._run_hidden", return_value=output
             ) as run:
-                result = read_power_draw()
+                result = read_gpu_power_draw()
                 self.assertIs(result["gpu_sw_thermal_throttling"], expected)
                 if output == "[N/A],Active":
                     self.assertIsNone(result["gpu_power_w"])
@@ -60,12 +66,12 @@ class PowerTelemetryTests(unittest.TestCase):
         for error in (OSError("missing"), RuntimeError("unsupported"),
                       subprocess.TimeoutExpired("nvidia-smi", 2)):
             with patch("backend.temperature_service._run_hidden", side_effect=error):
-                self.assertEqual(read_power_draw(), {"cpu_power_w": None, "gpu_power_w": None,
-                                                    "gpu_sw_thermal_throttling": None})
+                self.assertEqual(read_gpu_power_draw(), {"gpu_power_w": None,
+                                                        "gpu_sw_thermal_throttling": None})
         with (
             patch("backend.temperature_service.read_ryzen_temperature", return_value=(50, "CPU")),
             patch("backend.temperature_service.read_nvidia_temperature", return_value=(60, "GPU")),
-            patch("backend.temperature_service.read_power_draw") as power,
+            patch("backend.temperature_service.read_gpu_power_draw") as power,
         ):
             self.assertEqual(read_temperatures(), Temperatures(50, 60, "CPU", "GPU"))
             power.assert_not_called()
@@ -73,26 +79,30 @@ class PowerTelemetryTests(unittest.TestCase):
     def test_cpu_and_gpu_power_failures_are_independent(self):
         self.cpu_power.return_value = 15.5
         with patch("backend.temperature_service._run_hidden", side_effect=RuntimeError("GPU gone")):
-            self.assertEqual(read_power_draw(), {"cpu_power_w": 15.5, "gpu_power_w": None,
-                                                "gpu_sw_thermal_throttling": None})
+            self.assertEqual(read_cpu_power_draw(), {"cpu_power_w": 15.5})
+            self.assertEqual(read_gpu_power_draw(), {"gpu_power_w": None,
+                                                    "gpu_sw_thermal_throttling": None})
         self.cpu_power.side_effect = RuntimeError("CPU gone")
         with patch("backend.temperature_service._run_hidden", return_value="30,Not Active"):
-            self.assertEqual(read_power_draw(), {"cpu_power_w": None, "gpu_power_w": 30.0,
-                                                "gpu_sw_thermal_throttling": False})
+            self.assertEqual(read_cpu_power_draw(), {"cpu_power_w": None})
+            self.assertEqual(read_gpu_power_draw(), {"gpu_power_w": 30.0,
+                                                    "gpu_sw_thermal_throttling": False})
 
     def test_snapshot_enriches_display_and_power_failure_does_not_invalidate_sensors(self):
         with patch("backend.fan_control_backend.FanService.instance", return_value=Mock()):
             controller = BackendController()
         with patch("backend.fan_control_backend.read_temperatures",
                    return_value=Temperatures(50, 60, "CPU", "GPU")):
-            with patch("backend.fan_control_backend.read_power_draw", return_value={
-                "gpu_power_w": 40, "gpu_sw_thermal_throttling": True,
-            }):
+            with patch("backend.fan_control_backend.read_cpu_power_draw",
+                       return_value={"cpu_power_w": 12.5}),                     patch("backend.fan_control_backend.read_gpu_power_draw", return_value={
+                        "gpu_power_w": 40, "gpu_sw_thermal_throttling": True,
+                    }):
                 readings, error = controller._read_temperature_snapshot()
+                self.assertEqual(readings["cpu_power_w"], 12.5)
                 self.assertEqual(readings["gpu_power_w"], 40)
                 self.assertIs(readings["gpu_sw_thermal_throttling"], True)
                 self.assertIsNone(error)
-            with patch("backend.fan_control_backend.read_power_draw", side_effect=RuntimeError("gone")):
+            with patch("backend.fan_control_backend.read_cpu_power_draw", side_effect=RuntimeError("gone")),                     patch("backend.fan_control_backend.read_gpu_power_draw", side_effect=RuntimeError("gone")):
                 readings, error = controller._read_temperature_snapshot()
                 self.assertEqual((readings["cpu_c"], readings["gpu_c"]), (50, 60))
                 self.assertIsNone(readings["gpu_power_w"])
@@ -100,6 +110,35 @@ class PowerTelemetryTests(unittest.TestCase):
                 self.assertIsNone(readings["gpu_sw_thermal_throttling"])
                 self.assertIsNone(error)
                 self.assertIsNone(controller._sensor_error())
+
+    def test_stuck_gpu_power_query_never_blocks_temperature_reads(self):
+        with patch("backend.fan_control_backend.FanService.instance", return_value=Mock()):
+            controller = BackendController()
+        controller._sensor_timeout = 0.2
+        release = threading.Event()
+        self.addCleanup(release.set)
+        stuck = Mock(side_effect=lambda: release.wait(5) and {})
+        with patch("backend.fan_control_backend.read_temperatures",
+                   return_value=Temperatures(50, 60, "CPU", "GPU")), \
+                patch("backend.fan_control_backend.read_cpu_power_draw",
+                      return_value={"cpu_power_w": None}), \
+                patch("backend.fan_control_backend.read_gpu_power_draw", stuck):
+            for _ in range(3):
+                readings, error = controller._read_temperature_snapshot()
+                self.assertIsNone(error)
+                self.assertEqual((readings["cpu_c"], readings["gpu_c"]), (50, 60))
+                self.assertIsNone(readings["gpu_power_w"])
+                self.assertIsNone(controller._sensor_error())
+        # The abandoned query is skipped rather than queued or restarted.
+        stuck.assert_called_once()
+
+    def test_temperature_nvidia_query_ends_before_the_sensor_deadline(self):
+        with patch("backend.fan_control_backend.FanService.instance", return_value=Mock()):
+            controller = BackendController()
+        with patch("backend.temperature_service._run_hidden",
+                   return_value="RTX,55") as run:
+            read_nvidia_temperature()
+        self.assertLess(run.call_args.kwargs["timeout"], controller._sensor_timeout)
 
     def test_lightbar_maintenance_survives_an_exception(self):
         with patch("backend.fan_control_backend.FanService.instance", return_value=Mock()):

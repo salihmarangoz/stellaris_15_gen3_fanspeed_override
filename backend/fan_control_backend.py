@@ -34,12 +34,16 @@ if os.name == "nt":
     import msvcrt
 
     from backend.fan_control_service import ControlCenterService as FanService
-    from backend.temperature_service import read_power_draw, read_temperatures
+    from backend.temperature_service import (
+        read_cpu_power_draw,
+        read_gpu_power_draw,
+        read_temperatures,
+    )
 else:
     msvcrt = None
     from backend.linux_fan_service import LinuxFanService as FanService
     from backend.linux_sensors import read_temperatures
-    read_power_draw = None
+    read_cpu_power_draw = read_gpu_power_draw = None
 
 
 WINDOWS_CAPABILITIES = {
@@ -58,8 +62,11 @@ class BackendController:
         self._state_lock = threading.RLock()
         self._sensor_lock = threading.Lock()
         self._sensor_calls = BoundedOperation("Temperature driver")
+        # Display-only NVIDIA power query: its own lane, so a slow query can
+        # never delay or block a safety temperature read.
+        self._gpu_power_calls = BoundedOperation("NVIDIA power telemetry")
         self._hardware_calls = BoundedOperation("EC hardware")
-        self._sensor_timeout = 2.0
+        self._sensor_timeout = 4.0
         self._hardware_timeout = 8.0
         self._output_status_lock = threading.Lock()
         self._output_error: str | None = None
@@ -234,12 +241,18 @@ class BackendController:
         try:
             temperatures = self._read_validated_temperatures()
             result = asdict(temperatures)
-            if read_power_draw is not None:
-                # Extra display data cannot invalidate a successful sensor read.
+            # Extra display data cannot invalidate a successful sensor read.
+            if read_cpu_power_draw is not None:
+                # The fast MSR read stays on the PawnIO lane to avoid concurrent PawnIO use.
                 try:
-                    result.update(self._sensor_calls.call(read_power_draw, self._sensor_timeout, wait_for_slot=True))
+                    result.update(self._sensor_calls.call(read_cpu_power_draw, self._sensor_timeout, wait_for_slot=True))
                 except Exception:
                     result["cpu_power_w"] = None
+            if read_gpu_power_draw is not None:
+                # Skipped, not queued, while a previous query is still running.
+                try:
+                    result.update(self._gpu_power_calls.call(read_gpu_power_draw, self._sensor_timeout))
+                except Exception:
                     result["gpu_power_w"] = None
                     result["gpu_sw_thermal_throttling"] = None
             with self._state_lock:

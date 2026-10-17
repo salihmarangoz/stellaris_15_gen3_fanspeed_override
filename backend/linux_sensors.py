@@ -9,7 +9,8 @@ from pathlib import Path
 
 SYSFS = Path("/sys")
 NVIDIA_VENDOR_ID = "0x10de"
-NVIDIA_SMI_TIMEOUT_SECONDS = 8
+# Below the controller's 4-second sensor deadline (see fan_control_backend).
+NVIDIA_SMI_TIMEOUT_SECONDS = 3
 MAX_PLAUSIBLE_TEMPERATURE = 120.0
 MAX_PLAUSIBLE_CPU_POWER_WATTS = 400.0
 MIN_POWER_INTERVAL_SECONDS = 0.5

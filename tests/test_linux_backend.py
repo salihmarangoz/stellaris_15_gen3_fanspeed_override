@@ -513,7 +513,8 @@ class ControllerSafetyTests(unittest.TestCase):
         writer = threading.Thread(target=write)
         with patch("backend.fan_control_backend.read_temperatures",
                    return_value=SensorReadings(60.0, 50.0, "cpu", "gpu")), \
-                patch("backend.fan_control_backend.read_power_draw", None):
+                patch("backend.fan_control_backend.read_cpu_power_draw", None), \
+                patch("backend.fan_control_backend.read_gpu_power_draw", None):
             try:
                 reader.start()
                 self.assertTrue(started.wait(1.0))

@@ -253,7 +253,8 @@ class OperationSafetyTests(unittest.TestCase):
         controller = controller_with(service)
         controller._mark_output_failure("previous write failed")
         with patch("backend.fan_control_backend.read_temperatures", return_value=HOT), \
-                patch("backend.fan_control_backend.read_power_draw", None):
+                patch("backend.fan_control_backend.read_cpu_power_draw", None), \
+                patch("backend.fan_control_backend.read_gpu_power_draw", None):
             controller.load_state()
         self.assertFalse(controller._boost_enabled)
 

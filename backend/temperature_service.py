@@ -28,10 +28,13 @@ RYZEN_PACKAGE_ENERGY_MSR = 0xC001029B
 MIN_POWER_INTERVAL_SECONDS = 0.5
 MAX_POWER_INTERVAL_SECONDS = 30.0
 MAX_PLAUSIBLE_CPU_POWER_WATTS = 150.0
+# Below the controller's 4-second sensor deadline, so a stuck query releases
+# the temperature lane before the next caller's deadline expires.
+NVIDIA_TEMPERATURE_TIMEOUT_SECONDS = 3
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
 
-def _run_hidden(command: list[str], timeout: int = 8) -> str:
+def _run_hidden(command: list[str], timeout: float = 8) -> str:
     startupinfo = None
     if hasattr(subprocess, "STARTUPINFO"):
         startupinfo = subprocess.STARTUPINFO()
@@ -249,7 +252,8 @@ def read_nvidia_temperature() -> tuple[float, str]:
             "nvidia-smi.exe",
             "--query-gpu=name,temperature.gpu",
             "--format=csv,noheader,nounits",
-        ]
+        ],
+        timeout=NVIDIA_TEMPERATURE_TIMEOUT_SECONDS,
     )
     row = next(csv.reader(output.splitlines()))
     if len(row) < 2:
@@ -267,8 +271,16 @@ def read_temperatures() -> Temperatures:
     return Temperatures(cpu_c, gpu_c, cpu_source, gpu_source)
 
 
-def read_power_draw() -> dict[str, float | bool | None]:
-    """Optional display telemetry; never part of temperature validation."""
+def read_cpu_power_draw() -> dict[str, float | None]:
+    """Optional display telemetry from the PawnIO energy MSRs."""
+    try:
+        return {"cpu_power_w": _cpu_power_meter.sample()}
+    except (OSError, RuntimeError, ValueError, TypeError, TimeoutError):
+        return {"cpu_power_w": None}
+
+
+def read_gpu_power_draw() -> dict[str, float | bool | None]:
+    """Optional display telemetry from a separate, bounded NVIDIA query."""
     watts = None
     thermal_throttling = None
     try:
@@ -289,13 +301,7 @@ def read_power_draw() -> dict[str, float | bool | None]:
                 pass
     except (OSError, RuntimeError, ValueError, StopIteration, csv.Error, subprocess.TimeoutExpired):
         pass
-    cpu_watts = None
-    try:
-        cpu_watts = _cpu_power_meter.sample()
-    except (OSError, RuntimeError, ValueError, TypeError, TimeoutError):
-        pass
-    return {"cpu_power_w": cpu_watts, "gpu_power_w": watts,
-            "gpu_sw_thermal_throttling": thermal_throttling}
+    return {"gpu_power_w": watts, "gpu_sw_thermal_throttling": thermal_throttling}
 
 
 def read_nvidia_power_limits() -> dict[str, float]:
