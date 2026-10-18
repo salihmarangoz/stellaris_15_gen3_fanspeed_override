@@ -28,14 +28,16 @@ ACPI_LIBRARY_PATH = (
 ACPI_LIBRARY_SHA256 = "345cff34994351e126c4a7ef9ffc8e09fde005951f1a63af50d1945f28961a33"
 ACPI_LIBRARY_49_SHA256 = "ee2c506dd414222013e6dbe5c67a774b1fa1387a47ad5d705a82f048c1a945bb"
 SUPPORTED_ACPI_LIBRARIES = {ACPI_LIBRARY_SHA256, ACPI_LIBRARY_49_SHA256}
-# The library's ReadEC sends a 4 MiB request, and the driver runs an empty loop
-# once per input byte (~8 ms). For this exact driver image the same read IOCTL
-# is sent directly with a small buffer; see cc_analysis/windows-ec-driver-busy-wait.md.
-# Writes still use the library until the direct write is validated on the target.
+# The library's ReadEC/WriteEC send a 4 MiB request, and the driver runs an
+# empty loop once per input byte (~8 ms per byte). For this exact driver image
+# the same two IOCTLs are sent directly with a small buffer, and the library is
+# not loaded; see cc_analysis/windows-ec-driver-busy-wait.md. Its hash still
+# selects the 3.9 or 4.9 mode-byte semantics.
 UWACPI_DRIVER_PATH = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "drivers" / "UWACPIDriver.sys"
 UWACPI_DRIVER_SHA256 = "e9840521975e9073881a488f9e978a18c93aed44c57fe2382b1d513fd27126e2"
 UWACPI_DEVICE = "\\\\.\\ACPIDriver"
 IOCTL_READ_EC = 0x9C40A488
+IOCTL_WRITE_EC = 0x9C40A48C
 EC_REQUEST_SIZE = 64
 EXPECTED_PROJECT_ID = 0x10
 
@@ -142,8 +144,8 @@ def validate_ctgp_platform() -> None:
         raise RuntimeError("GPU power control requires the validated Stellaris board, SKU, and BIOS")
 
 
-class DriverEcReader:
-    """EC byte reads through UWACPIDriver's ECRR IOCTL on one persistent handle."""
+class DriverEcTransport:
+    """EC bytes through UWACPIDriver's ECRR/ECRW IOCTLs on one persistent handle."""
 
     def __init__(self) -> None:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -165,23 +167,34 @@ class DriverEcReader:
             raise OSError(f"Cannot open the OEM ACPI driver (Windows error {ctypes.get_last_error()})")
         self._handle = handle
 
-    def read(self, address: int) -> int:
+    def _request(self, code: int, address: int, value: int | None = None) -> tuple[Any, int]:
         if self._handle is None:
             raise RuntimeError("The OEM ACPI driver handle is closed")
         buffer = (ctypes.c_ubyte * EC_REQUEST_SIZE)()
         ctypes.c_uint32.from_buffer(buffer).value = address
+        if value is not None:
+            buffer[4] = value
         returned = ctypes.c_uint32()
         if not self._kernel32.DeviceIoControl(
-            self._handle, IOCTL_READ_EC, buffer, EC_REQUEST_SIZE,
+            self._handle, code, buffer, EC_REQUEST_SIZE,
             buffer, EC_REQUEST_SIZE, ctypes.byref(returned), None,
         ):
+            action = "read" if code == IOCTL_READ_EC else "write"
             raise RuntimeError(
-                f"EC read at 0x{address:04X} failed (Windows error {ctypes.get_last_error()})"
+                f"EC {action} at 0x{address:04X} failed (Windows error {ctypes.get_last_error()})"
             )
+        return buffer, returned.value
+
+    def read(self, address: int) -> int:
+        buffer, returned = self._request(IOCTL_READ_EC, address)
         # ECRR returns one byte as an ACPI integer; anything wider is malformed.
-        if returned.value < 4 or any(buffer[1:4]):
+        if returned < 4 or any(buffer[1:4]):
             raise RuntimeError(f"Malformed EC read result at 0x{address:04X}")
         return buffer[0]
+
+    def write(self, address: int, value: int) -> None:
+        # Like the library, ignore ECRW's status word; callers verify by readback.
+        self._request(IOCTL_WRITE_EC, address, value)
 
     def close(self) -> None:
         handle, self._handle = self._handle, None
@@ -189,8 +202,8 @@ class DriverEcReader:
             self._kernel32.CloseHandle(handle)
 
 
-def open_driver_ec_reader() -> DriverEcReader | None:
-    """Return a direct reader only for the exact analyzed driver image."""
+def open_driver_ec_transport() -> DriverEcTransport | None:
+    """Return a direct transport only for the exact analyzed driver image."""
     try:
         digest = hashlib.sha256(UWACPI_DRIVER_PATH.read_bytes()).hexdigest()
     except OSError:
@@ -198,7 +211,7 @@ def open_driver_ec_reader() -> DriverEcReader | None:
     if digest != UWACPI_DRIVER_SHA256:
         return None
     try:
-        return DriverEcReader()
+        return DriverEcTransport()
     except OSError:
         # The library path still works; it is only slower.
         return None
@@ -216,16 +229,16 @@ class DirectEcClient:
         library_loader: Callable[[str], Any] | None = None,
         broker_available: Callable[[], bool] = oem_broker_available,
         fallback_curve: dict[str, Any] | None = None,
-        driver_reader: Callable[[], Any | None] | None = None,
+        driver_transport: Callable[[], Any | None] | None = None,
     ) -> None:
         self._library_path = library_path
         self._library_loader = library_loader
         # A substituted library (tests) never reaches the real driver by default.
-        self._driver_reader_factory = driver_reader or (
-            open_driver_ec_reader if library_loader is None else (lambda: None)
+        self._driver_transport_factory = driver_transport or (
+            open_driver_ec_transport if library_loader is None else (lambda: None)
         )
-        self._driver_reader: Any | None = None
-        self.read_transport: str | None = None
+        self._driver_transport: Any | None = None
+        self.transport: str | None = None
         self._broker_available = broker_available
         self._fallback_curve = copy.deepcopy(fallback_curve or load_oem_curve_cache())
         self._library_sha256: str | None = None
@@ -237,7 +250,7 @@ class DirectEcClient:
         self._verified: tuple[float, dict[str, list[int]], tuple[int, int, int, int]] | None = None
 
     def connect(self) -> None:
-        if self._library is not None:
+        if self._read_ec is not None:
             return
         if os.name != "nt":
             raise RuntimeError("Direct EC fan control is available only on Windows")
@@ -256,27 +269,28 @@ class DirectEcClient:
         if digest == ACPI_LIBRARY_49_SHA256:
             validate_ctgp_platform()
         self._library_sha256 = digest
-        loader = self._library_loader or ctypes.WinDLL
-        try:
-            library = loader(str(self._library_path))
-            read_ec = library.ReadEC
-            write_ec = library.WriteEC
-            read_ec.argtypes = [ctypes.c_uint32]
-            read_ec.restype = ctypes.c_ubyte
-            write_ec.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
-            write_ec.restype = None
-        except (AttributeError, OSError) as exc:
-            raise RuntimeError("Cannot load the validated OEM EC interface") from exc
-
-        self._library = library
-        self._read_ec = read_ec
-        self._write_ec = write_ec
-        self.read_transport = "library"
-        reader = self._driver_reader_factory()
-        if reader is not None:
-            self._driver_reader = reader
-            self._read_ec = reader.read
-            self.read_transport = "driver_ioctl"
+        transport = self._driver_transport_factory()
+        if transport is not None:
+            self._driver_transport = transport
+            self._read_ec = transport.read
+            self._write_ec = transport.write
+            self.transport = "driver_ioctl"
+        else:
+            loader = self._library_loader or ctypes.WinDLL
+            try:
+                library = loader(str(self._library_path))
+                read_ec = library.ReadEC
+                write_ec = library.WriteEC
+                read_ec.argtypes = [ctypes.c_uint32]
+                read_ec.restype = ctypes.c_ubyte
+                write_ec.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+                write_ec.restype = None
+            except (AttributeError, OSError) as exc:
+                raise RuntimeError("Cannot load the validated OEM EC interface") from exc
+            self._library = library
+            self._read_ec = read_ec
+            self._write_ec = write_ec
+            self.transport = "library"
         try:
             self._validate_hardware()
         except Exception:
@@ -286,10 +300,10 @@ class DirectEcClient:
     def close(self) -> None:
         self._table_snapshot = None
         self._verified = None
-        reader, self._driver_reader = self._driver_reader, None
-        if reader is not None:
-            reader.close()
-        self.read_transport = None
+        transport, self._driver_transport = self._driver_transport, None
+        if transport is not None:
+            transport.close()
+        self.transport = None
         self._read_ec = None
         self._write_ec = None
         self._library = None

@@ -45,7 +45,7 @@ Automatic mode uses `max(CPU, GPU)` and applies one identical target to both fan
 
 While the OEM `GCUBridge` broker runs, fan curves go through Control Center's own MQTT interface. When it is stopped, the backend writes the EC fan tables through the installed OEM ACPI driver library (`ReadEC`/`WriteEC` exports only):
 
-- Reads skip the library's slow `ReadEC` (about 8 ms per byte) and send the same driver read request directly with a small buffer (about 0.08 ms), only for the exact analyzed `UWACPIDriver.sys` image. Writes still use the library's `WriteEC`.
+- For the exact analyzed `UWACPIDriver.sys` image, reads and writes skip the library's slow `ReadEC`/`WriteEC` (about 8 ms per byte) and send the same two driver requests directly with a small buffer (about 0.1 ms). Every other check below is unchanged. Any other driver image uses the library.
 - Direct EC is restricted to the EC project ID and the exact OEM library hashes validated on this laptop; the Control Center 4.9 library additionally requires the exact board, SKU, BIOS and the EC universal-control flag. Unknown libraries are refused.
 - While OEM MQTT is available, the backend caches the last complete OEM curve. If the OEM service clears its EC tables while stopping, Direct EC restores that curve, activates the traced OEM application and fan-subsystem state, and then applies the new duties.
 - Every write verifies all six 16-byte curve blocks and the control state, and attempts to restore every previous byte if verification fails.

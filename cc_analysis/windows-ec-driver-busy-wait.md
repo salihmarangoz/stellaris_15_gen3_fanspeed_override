@@ -30,4 +30,13 @@ An ignored elevated script (`build/qa/ec-ioctl-probe/probe.py`) checked both fil
 - The driver reported 64 returned bytes; the result is the value in byte 0 followed by zeros (`0x0740` returned `10 00 00 ...`).
 - Time per read: `ReadEC` 7.715 ms (20 reads), direct request 0.0827 ms (500 reads), about 93 times faster. The remaining time is ACPI evaluating `ECRR`.
 
-The backend now uses the direct request for reads with this exact driver image. Writes still go through `WriteEC`.
+
+## Owner-authorized direct write test (2026-10-18)
+
+With the owner's go-ahead, an ignored elevated script (`build/qa/ec-ioctl-probe/write_test.py`) checked both hashes and that the OEM broker was not listening. It then wrote only lightbar red channel `0x0749` through IOCTL `0x9C40A48C` (64-byte buffers, address dword at offset 0, value at offset 4). The saved lightbar mode was Off, so the channel started at 0.
+
+- Writing 1 read back as 1 through both the direct read and `ReadEC` (0.162 ms); writing 0 read back as 0 through both (0.128 ms).
+- The driver returned 64 bytes with `feffffff` in the first dword and the value byte unchanged at offset 4. `WriteEC` ignores this output, and so does the backend; readback verification decides success.
+- 20 alternating direct writes averaged 0.0928 ms; 4 `WriteEC` calls averaged 7.79 ms. The channel ended at 0 through both paths, and no library restore was needed.
+
+The backend now sends both requests directly for this exact driver image and does not load the library.
