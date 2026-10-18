@@ -8,8 +8,18 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QColor, QCloseEvent, QDesktopServices, QIcon, QPainter, QPen
+from PySide6.QtCore import QEvent, QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QCloseEvent,
+    QDesktopServices,
+    QGuiApplication,
+    QIcon,
+    QPainter,
+    QPen,
+    QShowEvent,
+)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -73,6 +83,28 @@ LIGHTBAR_APPLY_DELAY_MS = 300
 LIGHTBAR_RETRY_MS = 300
 # On Linux the service waits up to 150 s for the polkit password before a MUX write.
 MUX_SAVE_TIMEOUT_SECONDS = 180.0
+DWMWA_CLOAK = 13
+# Reveal a cloaked window even if its first frame never arrives.
+WINDOW_REVEAL_FALLBACK_MS = 1000
+
+
+def set_window_cloaked(widget: QWidget, cloaked: bool) -> bool:
+    """Hide or reveal a native Windows window in the compositor; False when unsupported."""
+    if sys.platform != "win32" or QGuiApplication.platformName() != "windows":
+        return False
+    import ctypes
+
+    value = ctypes.c_int(1 if cloaked else 0)
+    try:
+        result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            ctypes.c_void_p(int(widget.winId())),
+            DWMWA_CLOAK,
+            ctypes.byref(value),
+            ctypes.sizeof(value),
+        )
+    except (AttributeError, OSError):
+        return False
+    return result == 0
 
 
 class FanCurveGraph(QWidget):
@@ -767,6 +799,11 @@ class FanControlWindow(QMainWindow):
         self._gpu_power_applied: int | None = None
         self._state_loaded = False
         self._last_state_attempt = 0.0
+        self._window_cloaked = False
+        self._reveal_timer = QTimer(self)
+        self._reveal_timer.setSingleShot(True)
+        self._reveal_timer.setInterval(WINDOW_REVEAL_FALLBACK_MS)
+        self._reveal_timer.timeout.connect(self._reveal_window)
 
         self._build_ui()
         self._apply_preferences_to_controls()
@@ -2451,6 +2488,36 @@ class FanControlWindow(QMainWindow):
         application = QApplication.instance()
         if application is not None:
             QTimer.singleShot(0, application.quit)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        # Windows displays a new window before Qt paints it. While the controller
+        # keeps the GUI thread busy at startup, that unpainted frame shows white.
+        # The show event arrives before the native show, so cloak the window here
+        # and reveal it once its first frame has been flushed.
+        if not self._window_cloaked and not self.isMinimized() and set_window_cloaked(self, True):
+            self._window_cloaked = True
+            self.windowHandle().installEventFilter(self)
+            self._reveal_timer.start()
+        super().showEvent(event)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            self._window_cloaked
+            and watched is self.windowHandle()
+            and event.type() == QEvent.Type.Expose
+            and watched.isExposed()
+        ):
+            # Runs after this expose has painted and flushed the window.
+            QTimer.singleShot(0, self._reveal_window)
+        return super().eventFilter(watched, event)
+
+    def _reveal_window(self) -> None:
+        if not self._window_cloaked:
+            return
+        self._window_cloaked = False
+        self._reveal_timer.stop()
+        self.windowHandle().removeEventFilter(self)
+        set_window_cloaked(self, False)
 
     def activate_from_second_instance(self) -> None:
         if self.isMinimized():

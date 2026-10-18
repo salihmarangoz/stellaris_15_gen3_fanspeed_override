@@ -77,6 +77,7 @@ Last reviewed: 2026-10-16
 |   |-- test_windows_driver_transport.py hash-gated direct driver EC reads/writes, library fallback, cleanup
 |   |-- test_operation_safety.py stalled sensors/EC, late-write ordering, Boost failure/recovery, deadlines
 |   |-- test_operation_safety_gui.py real offscreen deadline recovery and truthful safety warnings
+|   |-- test_window_reveal.py    Windows main-window cloak until first frame, fallback reveal
 |   |-- test_packaged_startup.py real Qt check that must not import hardware backends
 |   |-- test_icons.py            committed icons match the generator and render
 |   |-- test_linux_polkit.py     mocked pkcheck subject, refusals, timeout, and /proc start time
@@ -203,11 +204,11 @@ stress-*.csv
 *.dat, *.dsl                  ACPI table dumps
 ```
 
-`scripts\build_exe.ps1` produces one `dist\StellarisFanControl.exe` containing the interface, controller, stylesheet, tray icon, and the hash-verified AMD PawnIO module. The generated ICO is embedded as the executable icon. The executable carries an administrator manifest and runs as one process after UAC approval. The PawnIO driver and OEM Control Center remain external system dependencies.
+`scripts\build_exe.ps1` produces the one-folder application `dist\StellarisFanControl\`: `StellarisFanControl.exe` plus its `_internal\` runtime directory, which holds the interface, controller, stylesheet, tray icon, Qt and Python DLLs, and the hash-verified AMD PawnIO module. `sys._MEIPASS` points at `_internal\`. A one-file build is not used because it unpacks into a new `%TEMP%\_MEI*` directory on every launch, and temp cleaners can delete the sensor module while the application runs (see `ACCIDENTS.md`). The generated ICO is embedded as the executable icon. The executable carries an administrator manifest and runs as one process after UAC approval. The PawnIO driver and OEM Control Center remain external system dependencies.
 
-`scripts\install.ps1` copies that executable to `%ProgramFiles%\StellarisFanControl\StellarisFanControl.exe` and registers the per-user `Stellaris Fan Control` scheduled task. The highest-privilege task starts at interactive sign-in, not pre-login system boot, so the window and tray icon are available on the user's desktop. The script verifies that the source and installed executable SHA-256 hashes match.
+`scripts\install.ps1` copies that folder to `%ProgramFiles%\StellarisFanControl\` (replacing any previous `_internal\` whole) and registers the per-user `Stellaris Fan Control` scheduled task. It refuses while the installed application is running. The highest-privilege task starts at interactive sign-in, not pre-login system boot, so the window and tray icon are available on the user's desktop. The script verifies the SHA-256 hash of every installed file against its source.
 
-The installer also accepts `StellarisFanControl.exe` at the root of an extracted release ZIP and invokes PawnIO setup before copying. Existing installed preferences are preserved. `scripts\package_release.ps1` stages files under an isolated `build\release-<id>` directory and writes `dist\StellarisFanControl-windows-x64.zip` plus `.zip.sha256`. The ZIP contains the executable, README, `docs\`, the `assets\ss.png` screenshot, third-party notices, `scripts\install.ps1`, `scripts\setup_pawnio.ps1`, and `third_party\pawnio\AMDFamily17.bin`.
+The installer also accepts the `StellarisFanControl\` folder at the root of an extracted release ZIP and invokes PawnIO setup before copying. Existing installed preferences are preserved, and a `StellarisFanControl.json` in the source folder is never copied. `scripts\package_release.ps1` stages files under an isolated `build\release-<id>` directory and writes `dist\StellarisFanControl-windows-x64.zip` plus `.zip.sha256`. The ZIP contains the `StellarisFanControl\` application folder (without preferences), README, `docs\`, the `assets\ss.png` screenshot, third-party notices, `scripts\install.ps1`, `scripts\setup_pawnio.ps1`, and `third_party\pawnio\AMDFamily17.bin`.
 
 `.github\workflows\release.yml` builds and runs mocked/offscreen tests on Windows without driver installation or application launch. Tag pushes publish the archive and checksum; manual branch runs retain them as Actions artifacts. Publication runs separately with repository-content write permission.
 

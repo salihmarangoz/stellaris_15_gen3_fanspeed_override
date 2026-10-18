@@ -25,7 +25,7 @@ Approve the administrator prompt with your own administrator account. The script
 
 The task starts the application with highest privileges whenever you sign in, including after a reboot. It uses your interactive sign-in instead of system boot, so the window and tray icon are on your desktop. Installation does not launch the application, so it never writes fan targets as a side effect. Launch `%ProgramFiles%\StellarisFanControl\StellarisFanControl.exe` yourself, or sign out and back in. Every launch starts Automatic mode and can write fan targets.
 
-**Updating**: exit the running application with its confirmed **Exit** action, then run the installer from the new release. Your `StellarisFanControl.json` is preserved and the startup task is replaced. The extracted folder can be moved afterwards without breaking startup.
+**Updating**: exit the running application with its confirmed **Exit** action, then run the installer from the new release. The installer refuses to run while the application is open. Your `StellarisFanControl.json` is preserved and the startup task is replaced. The extracted folder can be moved afterwards without breaking startup.
 
 **Autostart**: disable **Stellaris Fan Control** in Task Scheduler to stop it starting at sign-in. Enable the task or rerun the installer to turn it back on.
 

@@ -2,6 +2,24 @@
 
 This is the factual log of important failures or harmful behavior encountered by this project or the target system. Every entry must have a timestamp, title, problem, outcomes, and solution. When the actual incident time is unknown, the entry must say so and use the earliest recorded remediation timestamp instead of inventing a time. Design risks and unconfirmed possibilities belong in `TODO.md`.
 
+## 2026-10-18T12:18:00+03:00 - Temp cleanup deletes the running application's sensor module
+
+Actual occurrence time: shortly before 12:16 local time; the exact minute is unknown. The timestamp records diagnosis from a screenshot of the running application.
+
+### Problem
+
+The installed one-file executable unpacked its bundle, including `pawnio\AMDFamily17.bin`, into `%TEMP%\_MEI00000d582` at launch. A user-approved disk cleanup deleted the contents of `%TEMP%` while the application was running. Files that were not locked, including the AMD module, were removed. Temperature reads then failed with `[Errno 2] No such file or directory: ...\_MEI00000d582\pawnio\AMDFamily17.bin`.
+
+### Outcomes
+
+After more than 30 seconds without a valid reading, the sensor watchdog enabled EC Fan Boost, and the interface reported "Boost confirmed at 100%" with CPU and GPU temperatures unavailable. No automatic target was written from invalid data. Restarting the application unpacked a fresh copy and readings recovered.
+
+### Solution
+
+Build a PyInstaller one-folder application and install the executable with its `_internal\` directory under `%ProgramFiles%\StellarisFanControl`, so no runtime file lives in `%TEMP%`. The installer replaces `_internal\` whole, keeps the user's preferences, refuses while the application runs, and verifies every installed file's SHA-256.
+
+The one-folder build passed `--check-qt` with exit code 0 and the offscreen suite (230 tests, seven Linux-only skips). It was installed at 12:33 with every file's SHA-256 verified and the preferences file unchanged, then started through the sign-in task. It created no `%TEMP%\_MEI*` directory and showed 46 C CPU, 45 C GPU and 50% Automatic duty with both fan RPMs. A second launch exited with code 0 and kept the same process.
+
 ## 2026-10-11T03:33:27+03:00 - Local Windows update fails to load QtCore
 
 Actual occurrence time: unknown. The timestamp records diagnosis following the user's failed-launch report.

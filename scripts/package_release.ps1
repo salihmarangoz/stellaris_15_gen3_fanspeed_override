@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$executable = Join-Path $root 'dist\StellarisFanControl.exe'
-if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+$application = Join-Path $root 'dist\StellarisFanControl'
+if (-not (Test-Path -LiteralPath (Join-Path $application 'StellarisFanControl.exe') -PathType Leaf)) {
     throw 'Build the executable before packaging a release.'
 }
 
@@ -9,7 +9,12 @@ if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
 $stage = Join-Path $root ('build\release-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path (Join-Path $stage 'scripts') -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $stage 'third_party\pawnio') -Force | Out-Null
-Copy-Item -LiteralPath $executable -Destination $stage
+Copy-Item -LiteralPath $application -Destination $stage -Recurse
+# A local test run writes preferences beside the executable; never ship them.
+$stagedPreferences = Join-Path $stage 'StellarisFanControl\StellarisFanControl.json'
+if (Test-Path -LiteralPath $stagedPreferences) {
+    Remove-Item -LiteralPath $stagedPreferences -Force
+}
 foreach ($name in @('install.ps1', 'setup_pawnio.ps1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $stage 'scripts')
 }

@@ -11,7 +11,8 @@ $appIcon = Join-Path $root 'icon\stellaris-fan-control.ico'
 $appIconPng = Join-Path $root 'icon\stellaris-fan-control.png'
 $legacyExecutables = @(
     (Join-Path $root 'dist\StellarisFanControlFrontend.exe'),
-    (Join-Path $root 'dist\StellarisFanControlBackend.exe')
+    (Join-Path $root 'dist\StellarisFanControlBackend.exe'),
+    (Join-Path $root 'dist\StellarisFanControl.exe')
 )
 
 if (-not (Test-Path -LiteralPath $python)) {
@@ -52,10 +53,12 @@ try {
         (Join-Path $env:SystemRoot 'System32'),
         $env:SystemRoot
     ) -join ';'
+    # One-folder build: a one-file build unpacks into %TEMP%\_MEI* on every
+    # launch, and temp cleaners can delete the sensor module while it runs.
     & $python -m PyInstaller `
         --noconfirm `
         --clean `
-        --onefile `
+        --onedir `
         --windowed `
         --uac-admin `
         --icon "$appIcon" `
@@ -74,4 +77,4 @@ finally {
     Pop-Location
 }
 
-Write-Host "Built application: $(Join-Path $root 'dist\StellarisFanControl.exe')"
+Write-Host "Built application: $(Join-Path $root 'dist\StellarisFanControl\StellarisFanControl.exe')"

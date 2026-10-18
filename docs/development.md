@@ -30,7 +30,7 @@ $env:QT_QPA_PLATFORM = 'offscreen'
 powershell.exe -ExecutionPolicy Bypass -File .\scripts\build_exe.ps1
 ```
 
-The script creates the virtual environment when necessary, prepares PawnIO, installs the build requirements, and writes `dist\StellarisFanControl.exe`, which contains the interface, controller, stylesheet, and AMD sensor module. Start it normally and accept its UAC prompt. Generated executables, PyInstaller files, downloaded modules, virtual environments, caches, and fan backups are excluded from Git.
+The script creates the virtual environment when necessary, prepares PawnIO, installs the build requirements, and writes the one-folder application `dist\StellarisFanControl\`: `StellarisFanControl.exe` plus an `_internal\` directory with the interface, controller, stylesheet, and AMD sensor module. Keep the two together. A one-file build is deliberately avoided: it unpacks into `%TEMP%` on every launch, where temp cleaners can delete the sensor module while the application runs. Start it normally and accept its UAC prompt. Generated executables, PyInstaller files, downloaded modules, virtual environments, caches, and fan backups are excluded from Git.
 
 On a machine without the target hardware, use `scripts\build_exe.ps1 -SkipDriverInstall`. This skips only the driver installation; the pinned AMD module is still downloaded and hash-verified. It does not make the application usable without PawnIO on the laptop.
 
@@ -39,7 +39,7 @@ The build temporarily limits the DLL search `PATH` to the virtual environment, t
 Before installing a new build, check its bundled Qt DLLs and offscreen platform plugin without starting the controller or touching hardware:
 
 ```powershell
-$check = Start-Process -FilePath .\dist\StellarisFanControl.exe -ArgumentList '--check-qt' -Verb RunAs -WindowStyle Hidden -Wait -PassThru
+$check = Start-Process -FilePath .\dist\StellarisFanControl\StellarisFanControl.exe -ArgumentList '--check-qt' -Verb RunAs -WindowStyle Hidden -Wait -PassThru
 if ($check.ExitCode -ne 0) { throw "Packaged Qt check failed: $($check.ExitCode)" }
 ```
 
@@ -51,7 +51,7 @@ The administrator manifest still asks for UAC. A successful check exits with cod
 powershell.exe -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
-Approve the administrator prompt. The installer creates `%ProgramFiles%\StellarisFanControl`, copies `StellarisFanControl.exe` into it, and registers the per-user `Stellaris Fan Control` scheduled task. The task starts the application with highest privileges at the installing user's next sign-in; a sign-in trigger is used instead of system boot because the application needs the interactive desktop for its window and tray icon. Installation does not launch the application, so it never starts Automatic mode or writes the fans as a side effect.
+Approve the administrator prompt. The installer creates `%ProgramFiles%\StellarisFanControl`, copies `StellarisFanControl.exe` and its `_internal\` directory into it (keeping the installed `StellarisFanControl.json`), verifies every file's SHA-256, and registers the per-user `Stellaris Fan Control` scheduled task. The task starts the application with highest privileges at the installing user's next sign-in; a sign-in trigger is used instead of system boot because the application needs the interactive desktop for its window and tray icon. Installation does not launch the application, so it never starts Automatic mode or writes the fans as a side effect.
 
 On Ubuntu, `sudo ./scripts/linux/install.sh` installs from the working tree; see the [Ubuntu guide](linux.md#install).
 
