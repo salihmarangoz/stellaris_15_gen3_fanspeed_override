@@ -10,7 +10,7 @@ import os
 import subprocess
 from pathlib import Path
 
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.4.0"
 # Written by scripts/linux/install.sh from `git describe` when installing from a checkout.
 BUILD_VERSION_FILENAME = "build-version.txt"
 APP_ROOT = Path(__file__).resolve().parents[1]
