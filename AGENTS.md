@@ -8,7 +8,7 @@ This repository contains experimental, hardware-specific fan control for a Stell
 
 - Never use the OEM Control Center, EC, or MQTT CPU temperature in Auto mode. That reading is the failure this project works around.
 - CPU temperature must come from the validated Ryzen `Tctl/Tdie` SMN register (PawnIO on Windows, `k10temp` on Linux). GPU temperature must come from the NVIDIA driver.
-- Fail closed: if either temperature is unavailable, zero, malformed, or implausible, do not write a new automatic fan target. The only exception is a Linux NVIDIA GPU whose PCI runtime status is `suspended`: it is powered off, counts as cold, and must not be woken for a reading.
+- Fail closed: if either temperature is unavailable, zero, malformed, or implausible, do not write a new automatic fan target. The only exception is an NVIDIA GPU the OS reports powered off: on Linux a PCI runtime status of `suspended`, on Windows a PnP `DEVPKEY_Device_PowerData` most-recent state of D3 for the single NVIDIA display device (owner decision 2026-10-18). It counts as cold, both fans then follow the CPU temperature, and it must not be woken for a reading. An unknown or failed power-state check never counts as powered off.
 - If no valid CPU or GPU reading has succeeded for 30 seconds, enable EC Fan Boost (100%) on both fans until readings recover. Meanwhile refuse Manual writes and turning Boost off. On recovery resume Automatic or restore the last Manual duties. The sensor watchdog runs every 5 seconds in every mode and must never stop on an exception.
 - Auto mode uses `max(cpu_temperature, gpu_temperature)` and applies one identical target to both fans. Do not calculate separate automatic duties.
 - Auto mode must never request less than 30%. It must request 100% at 80 C and above.
@@ -28,6 +28,7 @@ This repository contains experimental, hardware-specific fan control for a Stell
 - `backend/fan_control.py`: low-level MQTT protocol, curve transformation, backup/restore CLI, and dry-run write commands.
 - `backend/fan_control_service.py`: backend-process singleton that owns the one persistent Control Center client and serializes synchronous operations.
 - `backend/temperature_service.py`: independent CPU/GPU temperature acquisition. It must not import or query the Control Center service.
+- `backend/nvidia_helper.py`: standard-library-only Windows NVIDIA helper process (read-only NVML and the PnP power-state check) and its killable, deadline-bounded client. Keep NVML calls out of the backend process so a hung driver call can be killed.
 - `backend/fan_control_backend.py`: PySide-free backend process, automatic control scheduler, IPC server, and frontend watchdog.
 - `shared/fan_control_ipc.py`: authenticated loopback IPC client plus process launch and 60-second restart-cooldown helpers.
 - `shared/fan_control_common.py`: pure automatic-curve calculation and lightbar validation shared by both platforms.
@@ -80,7 +81,7 @@ Keep protocol, service ownership, sensor acquisition, and presentation in these 
 Use the existing virtual environment when available:
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile backend\fan_control.py backend\fan_control_backend.py backend\fan_control_service.py backend\temperature_service.py frontend\fan_control_gui.py shared\fan_control_common.py shared\fan_control_ipc.py stellaris15gen3.py stellaris15gen3_frontend.py stellaris15gen3_backend.py
+.\.venv\Scripts\python.exe -m py_compile backend\fan_control.py backend\fan_control_backend.py backend\fan_control_service.py backend\temperature_service.py backend\nvidia_helper.py frontend\fan_control_gui.py shared\fan_control_common.py shared\fan_control_ipc.py stellaris15gen3.py stellaris15gen3_frontend.py stellaris15gen3_backend.py
 ```
 
 For GUI-only checks, use Qt's offscreen platform and avoid selecting Auto. Read-only live temperature checks require an elevated process and PawnIO. Clearly report when a check was not run because elevation or the target hardware was unavailable.

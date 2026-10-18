@@ -13,15 +13,18 @@ from backend.temperature_service import read_nvidia_power_limits
 
 class NvidiaLimitsTests(unittest.TestCase):
     def test_bounded_read_only_query_and_malformed_limits(self):
-        with patch('backend.temperature_service._run_hidden', return_value='115,165,120') as run:
+        limits = {'base_limit_w': 115, 'max_limit_w': 165, 'enforced_limit_w': 120}
+        with patch('backend.temperature_service._telemetry_helper.query', return_value=limits) as query:
             self.assertEqual(read_nvidia_power_limits(), {
                 'base_limit_w': 115, 'max_limit_w': 165, 'enforced_limit_w': 120,
             })
-            self.assertEqual(run.call_args.kwargs['timeout'], 2)
-            self.assertFalse(any(arg in ('-pl', '--power-limit') for arg in run.call_args.args[0]))
-        for output in ('', '[N/A],165,120', 'NaN,165,120', '165,115,120',
-                       '115,165,166', '115,301,120', '115,165', '115,165,120\n115,165,120'):
-            with self.subTest(output=output), patch('backend.temperature_service._run_hidden', return_value=output):
+            query.assert_called_once_with('limits', 2)
+        for result in ({}, {'powered_off': True}, dict(limits, base_limit_w=None),
+                       dict(limits, base_limit_w=float('nan')), dict(limits, base_limit_w=165, max_limit_w=115),
+                       dict(limits, enforced_limit_w=166), dict(limits, max_limit_w=301),
+                       dict(limits, enforced_limit_w='120'), dict(limits, base_limit_w=True)):
+            with self.subTest(result=result), patch('backend.temperature_service._telemetry_helper.query',
+                                                    return_value=result):
                 with self.assertRaises((ValueError, RuntimeError)):
                     read_nvidia_power_limits()
 

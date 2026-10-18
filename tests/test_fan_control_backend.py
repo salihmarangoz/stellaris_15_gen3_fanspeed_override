@@ -27,6 +27,7 @@ from backend.direct_fan_control import (
     LIGHTBAR_COLOR_ADDRESSES,
     DirectEcClient,
 )
+from backend.fan_control import fixed_curve
 from backend.fan_control_service import ControlCenterService
 from backend.fan_control_backend import BackendController, BackendServer, run_backend
 from backend.temperature_service import Temperatures
@@ -246,6 +247,85 @@ class DirectEcTests(unittest.TestCase):
 
         client._write_ec = write
         return client, memory, writes
+
+    def table_reads(self, client: DirectEcClient) -> list[int]:
+        reads: list[int] = []
+        original = client._read_ec
+
+        def read(address: int) -> int:
+            if 0x0F00 <= address < 0x0F60:
+                reads.append(address)
+            return original(address)
+
+        client._read_ec = read
+        return reads
+
+    def apply(self, client: DirectEcClient, duty: int) -> bool:
+        # The ControlCenterService.apply_manual sequence for one Auto cycle.
+        client.status()
+        return client.set_curve(fixed_curve(client.curve("DIRECT_EC"), duty, duty, include_idle=True))
+
+    def test_unchanged_auto_target_reads_the_table_once_and_writes_nothing(self) -> None:
+        client, memory, writes = self.make_client()
+        self.assertTrue(self.apply(client, 60))
+        self.assertTrue(writes)
+        written = dict(memory)
+        writes.clear()
+        reads = self.table_reads(client)
+        self.assertFalse(self.apply(client, 60))
+        client.set_boost(False)
+        self.assertEqual(writes, [])
+        self.assertEqual(memory, written)
+        # curve() hands its read to the write check instead of reading again.
+        self.assertEqual(len(reads), 96)
+        self.assertTrue(self.apply(client, 65))
+        self.assertEqual(memory[CPU_TABLE_DUTY_ADDRESS + 5], 130)
+
+    def test_drifted_table_or_mode_byte_is_rewritten_and_verified(self) -> None:
+        client, memory, writes = self.make_client()
+        self.apply(client, 60)
+        written = dict(memory)
+        for address, value in ((GPU_TABLE_DUTY_ADDRESS + 3, 0), (CPU_TABLE_DUTY_ADDRESS + 15, 200),
+                               (FAN_CONTROL_ADDRESS, 0x40), (FAN_CONTROL_MIRROR_ADDRESS, 0x40),
+                               (AP_EXISTS_ADDRESS, 0), (FAN_SUBSYSTEM_STATE_ADDRESS, 1)):
+            with self.subTest(address=hex(address)):
+                memory[address] = value
+                writes.clear()
+                self.assertTrue(self.apply(client, 60))
+                self.assertIn((address, written[address]), writes)
+                self.assertEqual(memory, written)
+
+    def test_stale_or_invalidated_table_read_is_never_reused(self) -> None:
+        client, memory, writes = self.make_client()
+        self.apply(client, 60)
+        curve = client.curve("DIRECT_EC")
+        memory[GPU_TABLE_DUTY_ADDRESS] = 0
+        with patch("backend.direct_fan_control.time.monotonic", return_value=1e9):
+            self.assertTrue(client.set_curve(curve))
+        self.assertEqual(memory[GPU_TABLE_DUTY_ADDRESS], 120)
+        curve = client.curve("DIRECT_EC")
+        client.set_boost(True)
+        memory[GPU_TABLE_DUTY_ADDRESS] = 0
+        writes.clear()
+        self.assertTrue(client.set_curve(curve))
+        self.assertEqual(memory[GPU_TABLE_DUTY_ADDRESS], 120)
+
+    def test_boost_skips_writes_only_when_every_mode_byte_already_matches(self) -> None:
+        client, memory, writes = self.make_client()
+        client.set_boost(False)
+        self.assertEqual(writes, [])
+        client.set_boost(True)
+        self.assertEqual(memory[FAN_CONTROL_ADDRESS], 0x40)
+        self.assertEqual(memory[FAN_CONTROL_MIRROR_ADDRESS], 0x40)
+        writes.clear()
+        client.set_boost(True)
+        self.assertEqual(writes, [])
+        memory[AP_EXISTS_ADDRESS] = 0
+        client.set_boost(True)
+        self.assertEqual(memory[AP_EXISTS_ADDRESS], 1)
+        client._broker_available = lambda: True
+        with self.assertRaisesRegex(RuntimeError, "broker"):
+            client.set_boost(True)
 
     def test_direct_curve_decodes_oem_half_percent_units(self) -> None:
         client, _, _ = self.make_client()

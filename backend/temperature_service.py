@@ -1,8 +1,6 @@
-import csv
 import ctypes
 import math
 import struct
-import subprocess
 import sys
 import threading
 import time
@@ -10,13 +8,17 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from backend.nvidia_helper import NvidiaHelper
+
 
 @dataclass(frozen=True)
 class Temperatures:
     cpu_c: float
-    gpu_c: float
+    gpu_c: float | None
     cpu_source: str
     gpu_source: str
+    # Only set when Windows PnP reports the NVIDIA GPU in D3; gpu_c is then None.
+    gpu_powered_off: bool = False
 
 
 PAWNIO_DEVICE = r"\\?\GLOBALROOT\Device\PawnIO"
@@ -31,29 +33,8 @@ MAX_PLAUSIBLE_CPU_POWER_WATTS = 150.0
 # Below the controller's 4-second sensor deadline, so a stuck query releases
 # the temperature lane before the next caller's deadline expires.
 NVIDIA_TEMPERATURE_TIMEOUT_SECONDS = 3
+NVIDIA_TELEMETRY_TIMEOUT_SECONDS = 2
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
-
-
-def _run_hidden(command: list[str], timeout: float = 8) -> str:
-    startupinfo = None
-    if hasattr(subprocess, "STARTUPINFO"):
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-
-    try:
-        result = subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            startupinfo=startupinfo,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except subprocess.CalledProcessError as exc:
-        details = (exc.stderr or exc.stdout or str(exc)).strip()
-        raise RuntimeError(details) from exc
-    return result.stdout.strip()
 
 
 def _pawn_module_path() -> Path:
@@ -246,29 +227,29 @@ def read_ryzen_temperature() -> tuple[float, str]:
     return celsius, "PawnIO AMD SMN (Tctl/Tdie)"
 
 
-def read_nvidia_temperature() -> tuple[float, str]:
-    output = _run_hidden(
-        [
-            "nvidia-smi.exe",
-            "--query-gpu=name,temperature.gpu",
-            "--format=csv,noheader,nounits",
-        ],
-        timeout=NVIDIA_TEMPERATURE_TIMEOUT_SECONDS,
-    )
-    row = next(csv.reader(output.splitlines()))
-    if len(row) < 2:
-        raise RuntimeError(f"Unexpected nvidia-smi output: {output!r}")
-    name = row[0].strip()
-    celsius = float(row[1].strip())
+# One helper per lane: a slow telemetry query must never delay a temperature read.
+_temperature_helper = NvidiaHelper("NVIDIA temperature")
+_telemetry_helper = NvidiaHelper("NVIDIA telemetry")
+
+
+def read_nvidia_temperature() -> tuple[float | None, str]:
+    """Return None as the temperature only for a GPU that PnP reports powered off."""
+    result = _temperature_helper.query("temperature", NVIDIA_TEMPERATURE_TIMEOUT_SECONDS)
+    if result.get("powered_off") is True:
+        return None, "NVIDIA GPU powered off (D3)"
+    celsius = result.get("temperature")
+    if type(celsius) is not int:
+        raise RuntimeError(f"Unexpected NVIDIA temperature: {celsius!r}")
     if not 0 <= celsius <= 120:
         raise RuntimeError(f"Implausible NVIDIA temperature: {celsius:.1f} C")
-    return celsius, f"NVIDIA driver ({name})"
+    name = str(result.get("name") or "NVIDIA GPU").strip()
+    return float(celsius), f"NVIDIA driver ({name})"
 
 
 def read_temperatures() -> Temperatures:
     cpu_c, cpu_source = read_ryzen_temperature()
     gpu_c, gpu_source = read_nvidia_temperature()
-    return Temperatures(cpu_c, gpu_c, cpu_source, gpu_source)
+    return Temperatures(cpu_c, gpu_c, cpu_source, gpu_source, gpu_c is None)
 
 
 def read_cpu_power_draw() -> dict[str, float | None]:
@@ -280,43 +261,32 @@ def read_cpu_power_draw() -> dict[str, float | None]:
 
 
 def read_gpu_power_draw() -> dict[str, float | bool | None]:
-    """Optional display telemetry from a separate, bounded NVIDIA query."""
+    """Optional display telemetry from the separate NVIDIA telemetry helper."""
     watts = None
     thermal_throttling = None
     try:
-        output = _run_hidden(
-            ["nvidia-smi.exe", "--query-gpu=power.draw,clocks_throttle_reasons.sw_thermal_slowdown",
-             "--format=csv,noheader,nounits"],
-            timeout=2,
-        )
-        rows = list(csv.reader(output.splitlines()))
-        if len(rows) == 1 and len(rows[0]) == 2:
-            row = rows[0]
-            thermal_throttling = {"Active": True, "Not Active": False}.get(row[1].strip())
-            try:
-                value = float(row[0].strip())
-                if math.isfinite(value) and 0 <= value <= 300:
-                    watts = value
-            except ValueError:
-                pass
-    except (OSError, RuntimeError, ValueError, StopIteration, csv.Error, subprocess.TimeoutExpired):
+        result = _telemetry_helper.query("power", NVIDIA_TELEMETRY_TIMEOUT_SECONDS)
+        value = result.get("power_w")
+        if type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 300:
+            watts = float(value)
+        if type(result.get("sw_thermal")) is bool:
+            thermal_throttling = result["sw_thermal"]
+    except (OSError, RuntimeError, ValueError, TimeoutError):
         pass
     return {"gpu_power_w": watts, "gpu_sw_thermal_throttling": thermal_throttling}
 
 
 def read_nvidia_power_limits() -> dict[str, float]:
     """Read driver limits without issuing a power-limit or profiling command."""
-    output = _run_hidden(
-        ["nvidia-smi.exe", "--query-gpu=power.default_limit,power.max_limit,enforced.power.limit",
-         "--format=csv,noheader,nounits"], timeout=2,
-    )
-    rows = list(csv.reader(output.splitlines()))
-    if len(rows) != 1 or len(rows[0]) != 3:
-        raise RuntimeError("Expected one NVIDIA GPU with three power limits")
-    values = [float(value.strip()) for value in rows[0]]
-    if any(not math.isfinite(value) or not 1 <= value <= 300 for value in values):
+    result = _telemetry_helper.query("limits", NVIDIA_TELEMETRY_TIMEOUT_SECONDS)
+    if result.get("powered_off") is True:
+        raise RuntimeError("The NVIDIA GPU is powered off")
+    keys = ("base_limit_w", "max_limit_w", "enforced_limit_w")
+    values = [result.get(key) for key in keys]
+    if any(type(value) not in (int, float) or not math.isfinite(value) or not 1 <= value <= 300
+           for value in values):
         raise RuntimeError("NVIDIA reported invalid power limits")
-    base, maximum, enforced = values
+    base, maximum, enforced = (float(value) for value in values)
     if not base <= maximum or enforced > maximum:
         raise RuntimeError("NVIDIA reported inconsistent power limits")
-    return dict(zip(("base_limit_w", "max_limit_w", "enforced_limit_w"), values))
+    return dict(zip(keys, (base, maximum, enforced)))

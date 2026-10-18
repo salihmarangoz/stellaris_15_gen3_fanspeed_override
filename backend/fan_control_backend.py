@@ -284,8 +284,9 @@ class BackendController:
         if temperatures.cpu_c <= 0:
             raise RuntimeError("A temperature source returned zero")
         if temperatures.gpu_c is None:
-            # Only the Linux reader reports a powered-off (runtime-suspended)
-            # GPU; it produces no heat, so Auto may use the CPU alone.
+            # Only a GPU the OS reports powered off (Linux runtime suspend,
+            # Windows PnP D3) may lack a reading; it produces no heat, so
+            # Auto may use the CPU alone and both fans get the CPU target.
             if not getattr(temperatures, "gpu_powered_off", False):
                 raise RuntimeError("The GPU temperature is unavailable")
         elif temperatures.gpu_c <= 0:

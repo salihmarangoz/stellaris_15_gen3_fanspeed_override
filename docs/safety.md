@@ -9,14 +9,14 @@ The embedded controller's CPU temperature is the failure this project works arou
 | | Windows | Ubuntu |
 | --- | --- | --- |
 | CPU | Ryzen `Tctl/Tdie` SMN register `0x00059800`, read through the signed [PawnIO](https://github.com/namazso/PawnIO) driver and its restricted AMD module | Kernel `k10temp` driver, `temp1_input` labeled `Tctl` (the same register) |
-| GPU | NVIDIA driver (`nvidia-smi`) | NVIDIA driver (`nvidia-smi`) |
+| GPU | NVIDIA driver (NVML, in a separate helper process) | NVIDIA driver (`nvidia-smi`) |
 | Never used | Control Center, EC and MQTT CPU temperatures; Core Temp; ACPI thermal zones | EC temperature registers, `acpitz`, TUXEDO/mainline EC hwmon temperatures |
 
 ## Fail Closed
 
 If either temperature is missing, zero, malformed, or implausible, Automatic mode writes no new fan target in that cycle.
 
-The one exception is an NVIDIA GPU on Ubuntu whose PCI runtime status is `suspended`: it is powered off, counts as cold, and is not woken for a reading. Automatic mode then uses the CPU temperature alone.
+The one exception is an NVIDIA GPU the operating system reports powered off: on Ubuntu a PCI runtime status of `suspended`, on Windows the PnP power state D3. It counts as cold and is not woken for a reading. Automatic mode then uses the CPU temperature alone, so both fans follow the CPU. If the power state cannot be read, the GPU is queried as usual and a missing reading still fails closed. The Windows D3 check is not yet validated on the laptop.
 
 ## Sensor Watchdog
 
@@ -24,7 +24,7 @@ Every 5 seconds, in every mode, a watchdog checks when the last valid CPU or GPU
 
 ## Fan Output Failures
 
-The safety fixes of 2026-10-16 bound temperature waits to 2 seconds and EC-operation waits to 8 seconds. The watchdog evaluates freshness before another sensor attempt.
+The safety fixes of 2026-10-16 bound temperature waits (now 4 seconds) and EC-operation waits to 8 seconds. The watchdog evaluates freshness before another sensor attempt.
 
 A failed fan update immediately attempts a guarded Boost and records a separate output fault. Lower Manual targets and turning Boost off are blocked until a verified recovery: a fresh successful Automatic update or an explicit successful 100/100 Manual retry. The UI distinguishes a confirmed Boost from unconfirmed fan safety. Evidence and remaining limits: [Windows safety review](../cc_analysis/windows-safety-review-2026-10-16.md).
 

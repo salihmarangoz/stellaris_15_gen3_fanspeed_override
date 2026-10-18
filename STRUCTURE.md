@@ -46,6 +46,7 @@ Last reviewed: 2026-10-16
 |   |-- __init__.py              backend package marker
 |   |-- fan_control_backend.py   elevated scheduler, IPC server, watchdog
 |   |-- temperature_service.py   independent Ryzen/NVIDIA temperatures and optional CPU/GPU power
+|   |-- nvidia_helper.py         stdlib-only killable NVML helper process, PnP D3 check, and its client
 |   |-- fan_control_service.py   serialized singleton, control-method selector, GPU/lightbar settings
 |   |-- fan_control.py           low-level MQTT, curves, backup/restore CLI
 |   |-- direct_fan_control.py    validated Uniwill EC fan tables, RPM, cTGP, and lightbar access
@@ -72,6 +73,7 @@ Last reviewed: 2026-10-16
 |   |-- test_windows_cpu_power.py AMD RAPL sampling, read restrictions, and PawnIO cleanup tests
 |   |-- test_windows_gpu_power.py cTGP gates, NVIDIA limits, verified writes, OEM refusal, persistence
 |   |-- test_windows_broker.py   listener-table parsing, bounds, API errors, and fail-closed writes
+|   |-- test_nvidia_helper.py    NVIDIA helper protocol, hang kill/restart, powered-off GPU handling
 |   |-- test_operation_safety.py stalled sensors/EC, late-write ordering, Boost failure/recovery, deadlines
 |   |-- test_operation_safety_gui.py real offscreen deadline recovery and truthful safety warnings
 |   |-- test_packaged_startup.py real Qt check that must not import hardware backends
@@ -113,6 +115,7 @@ stellaris15gen3_frontend.py -> frontend/fan_control_gui.py
 stellaris15gen3_backend.py  -> backend/fan_control_backend.py
                               |-- shared/{fan_control_common,fan_control_ipc}.py
                               |-- backend/temperature_service.py
+                              |    `-- backend/nvidia_helper.py (also run as its own process)
                               `-- backend/fan_control_service.py
                                    |-- backend/fan_control.py
                                    `-- backend/direct_fan_control.py
@@ -129,7 +132,7 @@ stellaris15gen3_linux_service.py -> backend/linux_backend.py
 
 `backend/fan_control_backend.py` selects `ControlCenterService` and `temperature_service` on Windows and `LinuxFanService` and `linux_sensors` elsewhere at import time. The Linux service imports only the Python standard library, so it runs with the system Python; PySide6 is needed only by the GUI environment. Linux modules must not import `backend/fan_control.py` (paho-mqtt) or any Windows-only module.
 
-`backend/temperature_service.py` must remain independent of `backend/fan_control_service.py` and both fan-control methods. Its optional Windows CPU/GPU power readings and NVIDIA software thermal-throttling flag are used only for display snapshots. The throttling flag shares the bounded GPU power query and drives only the amber GUI icon beside the control-method badge. `frontend/fan_control_gui.py` must not import the `backend` package. `shared/fan_control_common.py` stays pure so curve behavior and lightbar validation can be tested without Qt, MQTT, PawnIO, NVIDIA, or administrator access. Shared code must not import either process package. Windows and Linux direct EC clients both use the shared lightbar validation without importing each other.
+`backend/temperature_service.py` must remain independent of `backend/fan_control_service.py` and both fan-control methods. `backend/nvidia_helper.py` imports only the standard library because source mode runs it with `python -I`; the packaged executable runs it with `--nvidia-helper`, which `stellaris15gen3.py` checks before importing Qt or any other backend module. Its optional Windows CPU/GPU power readings and NVIDIA software thermal-throttling flag are used only for display snapshots. The throttling flag shares the bounded GPU power query and drives only the amber GUI icon beside the control-method badge. `frontend/fan_control_gui.py` must not import the `backend` package. `shared/fan_control_common.py` stays pure so curve behavior and lightbar validation can be tested without Qt, MQTT, PawnIO, NVIDIA, or administrator access. Shared code must not import either process package. Windows and Linux direct EC clients both use the shared lightbar validation without importing each other.
 
 ## Runtime paths
 

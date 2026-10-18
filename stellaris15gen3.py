@@ -6,6 +6,11 @@ from shared.fan_control_ipc import is_administrator
 from shared.bounded_operation import BoundedOperation
 
 
+# Must equal backend.nvidia_helper.HELPER_ARGUMENT; imported lazily so --check-qt
+# never loads a hardware backend.
+NVIDIA_HELPER_ARGUMENT = "--nvidia-helper"
+
+
 class InProcessBackendClient:
     can_restart = False
 
@@ -39,6 +44,11 @@ def check_qt_startup() -> int:
 
 
 def main() -> None:
+    if NVIDIA_HELPER_ARGUMENT in sys.argv[1:]:
+        # The backend's own killable NVIDIA query process; no Qt or hardware gates.
+        from backend.nvidia_helper import serve
+
+        raise SystemExit(serve())
     if "--check-qt" in sys.argv[1:]:
         raise SystemExit(check_qt_startup())
     if not is_administrator():

@@ -6,7 +6,7 @@
 - OEM Control Center 3.9.42.1 or 4.9.47.13 installed; its service may be running or stopped
 - The signed PawnIO driver (the installer sets it up)
 - Administrator access
-- The NVIDIA driver with a working `nvidia-smi.exe`
+- The NVIDIA driver, with its `nvml.dll` in `System32`
 - Python 3.11 or newer, only when running from source
 
 ## Install from a Release
@@ -46,7 +46,8 @@ The launcher runs `scripts\setup_pawnio.ps1`, which installs PawnIO when necessa
 - **OEM MQTT**: while the OEM `GCUBridge` broker runs, fan commands use Control Center's existing MQTT interface. This path is validated with Control Center 3.9.42.1.
 - **Direct EC**: when the broker is stopped or unavailable, the backend writes the EC fan tables through the installed, hash-validated Uniwill ACPI driver library. It switches back to OEM MQTT when the broker returns.
 - The **Start/Stop GCUBridge** button in the sensor panel switches between the two after a confirmation. The badge next to **Exit** shows which one is active.
-- CPU temperature is read from the Ryzen SMN register through PawnIO, GPU temperature through `nvidia-smi`. Control Center's CPU temperature is never used.
+- CPU temperature is read from the Ryzen SMN register through PawnIO. GPU temperature, power draw and power limits come from NVIDIA's NVML library, queried in a small helper process that the app kills and restarts if a query hangs. Control Center's CPU temperature is never used.
+- While Windows reports the NVIDIA GPU powered off (device power state D3), it is not queried, so it is not woken. Automatic mode then uses the CPU temperature alone, so both fans follow the CPU.
 
 Details of the Direct EC checks and verification are in the [safety model](safety.md#windows).
 

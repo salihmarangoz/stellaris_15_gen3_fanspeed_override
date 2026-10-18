@@ -35,37 +35,34 @@ class PowerTelemetryTests(unittest.TestCase):
         self.assertIn("fixed", result.stdout)
 
     def test_optional_gpu_power_accepts_zero_and_rejects_bad_values(self):
-        for output, expected in (("42.50,Not Active", 42.5), ("0,Not Active", 0.0),
-                                 ("[N/A],Not Active", None), ("", None),
-                                 ("NaN,Not Active", None), ("inf,Not Active", None),
-                                 ("-1,Not Active", None), ("301,Not Active", None),
-                                 ("42,12,Not Active", None)):
-            with self.subTest(output=output), patch(
-                "backend.temperature_service._run_hidden", return_value=output
-            ) as run:
+        for value, expected in ((42.5, 42.5), (0, 0.0), (None, None), ("42", None),
+                                (float("nan"), None), (float("inf"), None),
+                                (-1, None), (301, None), (True, None)):
+            with self.subTest(value=value), patch(
+                "backend.temperature_service._telemetry_helper.query",
+                return_value={"power_w": value, "sw_thermal": False},
+            ) as query:
                 result = read_gpu_power_draw()
                 self.assertEqual(result["gpu_power_w"], expected)
-                self.assertEqual(run.call_args.kwargs["timeout"], 2)
-                self.assertIn("--query-gpu=power.draw,clocks_throttle_reasons.sw_thermal_slowdown",
-                              run.call_args.args[0])
+                query.assert_called_once_with("power", 2)
 
     def test_thermal_flag_is_optional_and_independent_of_power_draw(self):
-        for output, expected in (("[N/A],Active", True), ("42,Not Active", False),
-                                 ("42,[N/A]", None), ("42,unknown", None),
-                                 ("42,Active\n50,Not Active", None), ("42", None)):
-            with self.subTest(output=output), patch(
-                "backend.temperature_service._run_hidden", return_value=output
-            ) as run:
-                result = read_gpu_power_draw()
-                self.assertIs(result["gpu_sw_thermal_throttling"], expected)
-                if output == "[N/A],Active":
-                    self.assertIsNone(result["gpu_power_w"])
-                run.assert_called_once()
+        for result, expected in (({"power_w": None, "sw_thermal": True}, True),
+                                 ({"power_w": 42, "sw_thermal": False}, False),
+                                 ({"power_w": 42, "sw_thermal": None}, None),
+                                 ({"power_w": 42, "sw_thermal": "Active"}, None),
+                                 ({"power_w": 42}, None), ({"powered_off": True}, None)):
+            with self.subTest(result=result), patch(
+                "backend.temperature_service._telemetry_helper.query", return_value=result
+            ):
+                power = read_gpu_power_draw()
+                self.assertIs(power["gpu_sw_thermal_throttling"], expected)
+                if result.get("power_w") is None:
+                    self.assertIsNone(power["gpu_power_w"])
 
     def test_power_errors_are_optional_and_temperature_reads_do_not_query_power(self):
-        for error in (OSError("missing"), RuntimeError("unsupported"),
-                      subprocess.TimeoutExpired("nvidia-smi", 2)):
-            with patch("backend.temperature_service._run_hidden", side_effect=error):
+        for error in (OSError("missing"), RuntimeError("unsupported"), TimeoutError("hung")):
+            with patch("backend.temperature_service._telemetry_helper.query", side_effect=error):
                 self.assertEqual(read_gpu_power_draw(), {"gpu_power_w": None,
                                                         "gpu_sw_thermal_throttling": None})
         with (
@@ -78,12 +75,14 @@ class PowerTelemetryTests(unittest.TestCase):
 
     def test_cpu_and_gpu_power_failures_are_independent(self):
         self.cpu_power.return_value = 15.5
-        with patch("backend.temperature_service._run_hidden", side_effect=RuntimeError("GPU gone")):
+        with patch("backend.temperature_service._telemetry_helper.query",
+                   side_effect=RuntimeError("GPU gone")):
             self.assertEqual(read_cpu_power_draw(), {"cpu_power_w": 15.5})
             self.assertEqual(read_gpu_power_draw(), {"gpu_power_w": None,
                                                     "gpu_sw_thermal_throttling": None})
         self.cpu_power.side_effect = RuntimeError("CPU gone")
-        with patch("backend.temperature_service._run_hidden", return_value="30,Not Active"):
+        with patch("backend.temperature_service._telemetry_helper.query",
+                   return_value={"power_w": 30, "sw_thermal": False}):
             self.assertEqual(read_cpu_power_draw(), {"cpu_power_w": None})
             self.assertEqual(read_gpu_power_draw(), {"gpu_power_w": 30.0,
                                                     "gpu_sw_thermal_throttling": False})
@@ -135,10 +134,12 @@ class PowerTelemetryTests(unittest.TestCase):
     def test_temperature_nvidia_query_ends_before_the_sensor_deadline(self):
         with patch("backend.fan_control_backend.FanService.instance", return_value=Mock()):
             controller = BackendController()
-        with patch("backend.temperature_service._run_hidden",
-                   return_value="RTX,55") as run:
-            read_nvidia_temperature()
-        self.assertLess(run.call_args.kwargs["timeout"], controller._sensor_timeout)
+        with patch("backend.temperature_service._temperature_helper.query",
+                   return_value={"name": "RTX", "temperature": 55}) as query:
+            self.assertEqual(read_nvidia_temperature(), (55.0, "NVIDIA driver (RTX)"))
+        operation, timeout = query.call_args.args
+        self.assertEqual(operation, "temperature")
+        self.assertLess(timeout, controller._sensor_timeout)
 
     def test_lightbar_maintenance_survives_an_exception(self):
         with patch("backend.fan_control_backend.FanService.instance", return_value=Mock()):

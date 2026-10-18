@@ -39,7 +39,7 @@ Only one laptop has been validated: a Stellaris 15 Gen3 (XMG/Uniwill board `GMxZ
 | OS | Windows 11 | Ubuntu 24.04, Secure Boot kernel lockdown off |
 | Fan access | OEM Control Center 3.9.42.1 (OEM MQTT or direct EC) or 4.9.47.13 (direct EC only) | Direct EC through the firmware's memory window; no TUXEDO software or extra kernel modules |
 | CPU temperature | Ryzen `Tctl` through the signed PawnIO driver | Kernel `k10temp` driver |
-| GPU temperature | NVIDIA driver (`nvidia-smi`) | NVIDIA driver (`nvidia-smi`) |
+| GPU temperature | NVIDIA driver (NVML) | NVIDIA driver (`nvidia-smi`) |
 
 ## Install
 

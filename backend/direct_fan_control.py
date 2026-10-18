@@ -5,6 +5,7 @@ import json
 import os
 import socket
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -62,6 +63,9 @@ GPU_TEMP_UP_ADDRESS = 0x0F30
 GPU_TEMP_DOWN_ADDRESS = 0x0F40
 GPU_TABLE_DUTY_ADDRESS = 0x0F50
 TABLE_POINT_COUNT = 16
+# curve() hands its table read to the write that immediately follows it in the
+# same operation. Any EC write, or this much time, discards it.
+TABLE_SNAPSHOT_SECONDS = 1.0
 
 FAN_CONTROL_BOOST = 0x40
 FAN_CONTROL_USER_HIGH = 0xA0
@@ -146,6 +150,7 @@ class DirectEcClient:
         self._library: Any | None = None
         self._read_ec: Callable[[int], int] | None = None
         self._write_ec: Callable[[int, int], None] | None = None
+        self._table_snapshot: tuple[float, dict[str, list[int]]] | None = None
 
     def connect(self) -> None:
         if self._library is not None:
@@ -189,6 +194,7 @@ class DirectEcClient:
             raise
 
     def close(self) -> None:
+        self._table_snapshot = None
         self._read_ec = None
         self._write_ec = None
         self._library = None
@@ -216,6 +222,7 @@ class DirectEcClient:
             raise RuntimeError("OEM broker became available before the direct EC write")
         if not 0 <= value <= 0xFF:
             raise ValueError(f"Invalid EC byte for 0x{address:04X}: {value}")
+        self._table_snapshot = None
         self._write_ec(address, value)
 
     def _read_range(self, address: int, count: int = TABLE_POINT_COUNT) -> list[int]:
@@ -326,9 +333,16 @@ class DirectEcClient:
             "ControlMethod": self.method_name,
         }
 
+    def _take_table_snapshot(self) -> dict[str, list[int]] | None:
+        snapshot, self._table_snapshot = self._table_snapshot, None
+        if snapshot is None or not 0 <= time.monotonic() - snapshot[0] <= TABLE_SNAPSHOT_SECONDS:
+            return None
+        return snapshot[1]
+
     def curve(self, name: str) -> dict[str, Any]:
         del name
         table = self._read_raw_table()
+        self._table_snapshot = (time.monotonic(), copy.deepcopy(table))
         if self._table_is_empty(table):
             if self._fallback_curve is None:
                 raise RuntimeError("No complete fan curve is available for direct control")
@@ -499,8 +513,8 @@ class DirectEcClient:
             raise
         return changed
 
-    def set_curve(self, curve: dict[str, Any]) -> None:
-        self._write_curve(curve, FAN_CONTROL_USER_HIGH)
+    def set_curve(self, curve: dict[str, Any]) -> bool:
+        return self._write_curve(curve, FAN_CONTROL_USER_HIGH)
 
     def restore_curve(self, curve: dict[str, Any]) -> None:
         metadata = curve.get("DirectControl")
@@ -511,12 +525,14 @@ class DirectEcClient:
             raise ValueError("The direct-EC backup has an invalid fan-control byte")
         self._write_curve(curve, control)
 
-    def _write_curve(self, curve: dict[str, Any], control: int) -> None:
+    def _write_curve(self, curve: dict[str, Any], control: int) -> bool:
+        """Write the table and mode bytes unless the EC already holds them."""
+        snapshot = self._take_table_snapshot()
         if self._broker_available():
             raise RuntimeError("OEM broker became available before the direct fan write")
         encoded = self._encode_curve(curve)
 
-        previous = self._read_raw_table()
+        previous = snapshot if snapshot is not None else self._read_raw_table()
         previous_control = self._read(FAN_CONTROL_ADDRESS)
         previous_mirror = self._read(FAN_CONTROL_MIRROR_ADDRESS)
         previous_ap_exists = self._read(AP_EXISTS_ADDRESS)
@@ -531,6 +547,14 @@ class DirectEcClient:
         }
         subsystem = previous_subsystem_state | 0x04 if self._library_sha256 == ACPI_LIBRARY_49_SHA256 else 5
         mirror = previous_mirror | 0x80 if self._library_sha256 == ACPI_LIBRARY_49_SHA256 else control
+        if (
+            previous == encoded
+            and (previous_control, previous_mirror, previous_ap_exists, previous_subsystem_state)
+            == (control, mirror, 1, subsystem)
+        ):
+            # The fresh reads verify the state. Rewriting it would cost about
+            # 200 more busy-waiting driver transactions every Auto cycle.
+            return False
         try:
             self._write(AP_EXISTS_ADDRESS, 1)
             self._write(FAN_SUBSYSTEM_STATE_ADDRESS, subsystem)
@@ -566,13 +590,22 @@ class DirectEcClient:
             self._write(AP_EXISTS_ADDRESS, previous_ap_exists)
             self._write(FAN_SUBSYSTEM_STATE_ADDRESS, previous_subsystem_state)
             raise
+        return True
 
     def set_boost(self, enabled: bool) -> None:
         if self._broker_available():
             raise RuntimeError("OEM broker became available before the direct boost write")
         expected = FAN_CONTROL_BOOST if enabled else FAN_CONTROL_USER_HIGH
-        subsystem = self._read(FAN_SUBSYSTEM_STATE_ADDRESS) | 0x04 if self._library_sha256 == ACPI_LIBRARY_49_SHA256 else 5
-        mirror = self._read(FAN_CONTROL_MIRROR_ADDRESS) | 0x80 if self._library_sha256 == ACPI_LIBRARY_49_SHA256 else expected
+        current = (
+            self._read(AP_EXISTS_ADDRESS),
+            self._read(FAN_SUBSYSTEM_STATE_ADDRESS),
+            self._read(FAN_CONTROL_ADDRESS),
+            self._read(FAN_CONTROL_MIRROR_ADDRESS),
+        )
+        subsystem = current[1] | 0x04 if self._library_sha256 == ACPI_LIBRARY_49_SHA256 else 5
+        mirror = current[3] | 0x80 if self._library_sha256 == ACPI_LIBRARY_49_SHA256 else expected
+        if current == (1, subsystem, expected, mirror):
+            return
         self._write(AP_EXISTS_ADDRESS, 1)
         self._write(FAN_SUBSYSTEM_STATE_ADDRESS, subsystem)
         self._write(FAN_CONTROL_ADDRESS, expected)
