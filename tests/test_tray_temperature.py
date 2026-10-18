@@ -87,6 +87,21 @@ class TrayTemperatureTests(unittest.TestCase):
         self.assertEqual(self.messages.call_count, 2)
         self.assertIn("GPU is at 87 C", self.messages.call_args.args[1])
 
+    def test_notifications_can_be_turned_off_from_the_tray_and_stay_off(self):
+        action = self.window.hot_notifications_action
+        self.assertTrue(action.isCheckable())
+        self.assertTrue(action.isChecked())  # on by default
+        self.assertIn(action, self.window.tray_icon.contextMenu().actions())
+        action.setChecked(False)
+        self.window._show_temperatures(readings(90, 60))
+        self.messages.assert_not_called()
+        # The icon still turns red and blinks.
+        self.assertEqual(self.window._tray_level, "hot")
+        self.assertTrue(self.window._tray_blink_timer.isActive())
+        self.assertFalse(FanControlWindow._load_preferences()["hot_notifications"])
+        action.setChecked(True)
+        self.assertTrue(FanControlWindow._load_preferences()["hot_notifications"])
+
     def test_sensor_error_keeps_the_last_level(self):
         self.window._show_temperatures(readings(90, 60))
         self.window._show_temperature_error("GPU unavailable")

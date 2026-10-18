@@ -101,7 +101,7 @@ Automatic mode always starts on launch; Manual values are remembered for the nex
 
 Closing the window hides it in the tray; fan control keeps running.
 
-The tray icon shows the hotter of the CPU and GPU: its normal look up to 70 C, yellow above 70 C, and red above 85 C. Red blinks once a second and shows one desktop notification; the next notification comes only after the reading has fallen back to 70 C or below. Hovering over the icon shows the hottest reading.
+The tray icon shows the hotter of the CPU and GPU: its normal look up to 70 C, yellow above 70 C, and red above 85 C. Red blinks once a second and shows one desktop notification; the next notification comes only after the reading has fallen back to 70 C or below. The tray menu's **High temperature notifications** item, on by default, turns these notifications off; the icon still turns red and blinks. Hovering over the icon shows the hottest reading.
 
 - **Windows**: the app is the controller. **Exit** (button or tray menu) asks for confirmation, then stops Automatic mode, turns Fan Boost off, writes 100% to both fans, and exits only if that write succeeds. Shutdown, restart and sign-out also write 100% first; see [the Windows guide](windows.md#shutdown-and-exit).
 - **Ubuntu**: the root service is the controller and keeps running without the GUI. **Quit** asks for confirmation and closes only the GUI. Stopping the service, including shutdown and reboot, writes 100% to both fans.

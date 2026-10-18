@@ -1243,6 +1243,15 @@ class FanControlWindow(QMainWindow):
         about_action.triggered.connect(self.open_project_website)
         tray_menu.addAction(about_action)
         tray_menu.addSeparator()
+        self.hot_notifications_action = QAction("High temperature notifications", self)
+        self.hot_notifications_action.setCheckable(True)
+        self.hot_notifications_action.setChecked(bool(self._preferences["hot_notifications"]))
+        self.hot_notifications_action.setToolTip(
+            f"Show a desktop notification when the CPU or GPU passes {TRAY_HOT_ABOVE_C:.0f} C"
+        )
+        self.hot_notifications_action.toggled.connect(self._hot_notifications_toggled)
+        tray_menu.addAction(self.hot_notifications_action)
+        tray_menu.addSeparator()
         self.tray_exit_action = QAction("Quit" if self._linux else "Exit", self)
         self.tray_exit_action.triggered.connect(self.request_exit)
         tray_menu.addAction(self.tray_exit_action)
@@ -1269,6 +1278,7 @@ class FanControlWindow(QMainWindow):
             "manual_gpu": 50,
             "mirror_fans": False,
             "start_minimized": True,
+            "hot_notifications": True,
         }
         try:
             loaded = json.loads(cls._settings_path().read_text(encoding="utf-8"))
@@ -1295,6 +1305,11 @@ class FanControlWindow(QMainWindow):
                     loaded["start_minimized"]
                     if isinstance(loaded.get("start_minimized"), bool)
                     else defaults["start_minimized"]
+                ),
+                "hot_notifications": (
+                    loaded["hot_notifications"]
+                    if isinstance(loaded.get("hot_notifications"), bool)
+                    else defaults["hot_notifications"]
                 ),
             }
         except (OSError, ValueError, TypeError):
@@ -1331,6 +1346,8 @@ class FanControlWindow(QMainWindow):
             "manual_gpu": self.gpu_spin.value(),
             "mirror_fans": self.mirror_fans_checkbox.isChecked(),
             "start_minimized": self.start_minimized_checkbox.isChecked(),
+            # Kept current by the tray action's toggle handler.
+            "hot_notifications": bool(self._preferences["hot_notifications"]),
         }
         path = self._settings_path()
         temporary = path.with_suffix(path.suffix + ".tmp")
@@ -1347,6 +1364,10 @@ class FanControlWindow(QMainWindow):
         if not self._syncing:
             self._preferences["start_minimized"] = enabled
             self._save_preferences()
+
+    def _hot_notifications_toggled(self, enabled: bool) -> None:
+        self._preferences["hot_notifications"] = enabled
+        self._save_preferences()
 
     def show_on_startup(self) -> None:
         if not self.start_minimized_checkbox.isChecked():
@@ -1753,7 +1774,11 @@ class FanControlWindow(QMainWindow):
         else:
             level = "normal"
         self.tray_icon.setToolTip(f"Fan Control | {name} {hottest:.0f} C")
-        if level == "hot" and not self._tray_hot_notified:
+        if (
+            level == "hot"
+            and not self._tray_hot_notified
+            and self.hot_notifications_action.isChecked()
+        ):
             self._tray_hot_notified = True
             self.tray_icon.showMessage(
                 "Fan Control",

@@ -81,7 +81,7 @@ Last reviewed: 2026-10-16
 |   |-- test_operation_safety.py stalled sensors/EC, late-write ordering, Boost failure/recovery, deadlines
 |   |-- test_operation_safety_gui.py real offscreen deadline recovery and truthful safety warnings
 |   |-- test_window_reveal.py    Windows main-window cloak until first frame, fallback reveal
-|   |-- test_tray_temperature.py tray icon color, hot blink and one-time hot notification
+|   |-- test_tray_temperature.py tray icon color, hot blink, one-time hot notification and its tray toggle
 |   |-- test_version.py          release, installed-build and git-checkout version display
 |   |-- test_packaged_startup.py real Qt check that must not import hardware backends
 |   |-- test_icons.py            committed icons match the generator and render
