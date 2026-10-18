@@ -401,7 +401,8 @@ class DirectEcTests(unittest.TestCase):
         reads.clear()
         service.apply_manual(60, 60, create_backup=False)
         self.assertGreater(len(reads), 96)
-        with TemporaryDirectory() as directory,                 patch("backend.fan_control_service.save_backup",
+        with TemporaryDirectory() as directory, \
+                patch("backend.fan_control_service.save_backup",
                       return_value=Path(directory) / "backup.json") as backup:
             reads.clear()
             service.apply_manual(60, 60, create_backup=True)

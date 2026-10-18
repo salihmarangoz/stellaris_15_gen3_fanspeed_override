@@ -126,7 +126,9 @@ class PackagedEntryPointTests(unittest.TestCase):
         import stellaris15gen3
 
         self.assertEqual(stellaris15gen3.NVIDIA_HELPER_ARGUMENT, nvidia_helper.HELPER_ARGUMENT)
-        with patch.object(sys, "argv", ["StellarisFanControl.exe", nvidia_helper.HELPER_ARGUMENT]),                 patch("backend.nvidia_helper.serve", return_value=0) as run,                 patch("stellaris15gen3.is_administrator") as administrator:
+        with patch.object(sys, "argv", ["StellarisFanControl.exe", nvidia_helper.HELPER_ARGUMENT]), \
+                patch("backend.nvidia_helper.serve", return_value=0) as run, \
+                patch("stellaris15gen3.is_administrator") as administrator:
             with self.assertRaises(SystemExit) as result:
                 stellaris15gen3.main()
         self.assertEqual(result.exception.code, 0)
