@@ -29,8 +29,10 @@ Last reviewed: 2026-10-16
 |   |-- stellaris-fan-control.svg color application icon
 |   |-- stellaris-fan-control.png 256 px window, menu, and Windows tray icon
 |   |-- stellaris-fan-control.ico Windows executable icon, 16-256 px
-|   `-- stellaris-fan-control-tray.svg
-|                                light monochrome Linux (GNOME top bar) tray icon
+|   |-- stellaris-fan-control-tray.svg
+|   |                            light monochrome Linux (GNOME top bar) tray icon
+|   `-- stellaris-fan-control-tray-warm.svg, -hot.svg, -hot-dim.svg
+|                                yellow and blinking red tray icons (both platforms)
 |-- stellaris15gen3.py           elevated single-process packaged entry point
 |-- stellaris15gen3_frontend.py  normal-user frontend application entry point
 |-- stellaris15gen3_backend.py   elevated backend application entry point
@@ -78,6 +80,7 @@ Last reviewed: 2026-10-16
 |   |-- test_operation_safety.py stalled sensors/EC, late-write ordering, Boost failure/recovery, deadlines
 |   |-- test_operation_safety_gui.py real offscreen deadline recovery and truthful safety warnings
 |   |-- test_window_reveal.py    Windows main-window cloak until first frame, fallback reveal
+|   |-- test_tray_temperature.py tray icon color, hot blink and one-time hot notification
 |   |-- test_packaged_startup.py real Qt check that must not import hardware backends
 |   |-- test_icons.py            committed icons match the generator and render
 |   |-- test_linux_polkit.py     mocked pkcheck subject, refusals, timeout, and /proc start time

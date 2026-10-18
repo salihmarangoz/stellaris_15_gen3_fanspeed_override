@@ -9,6 +9,8 @@ $pawnModule = Join-Path $root 'third_party\pawnio\AMDFamily17.bin'
 $styleSheet = Join-Path $root 'frontend\stellaris15gen3.css'
 $appIcon = Join-Path $root 'icon\stellaris-fan-control.ico'
 $appIconPng = Join-Path $root 'icon\stellaris-fan-control.png'
+# Warm and hot tray icons; the normal Windows tray icon is the color PNG.
+$trayIcons = 'warm', 'hot', 'hot-dim' | ForEach-Object { Join-Path $root "icon\stellaris-fan-control-tray-$_.svg" }
 $legacyExecutables = @(
     (Join-Path $root 'dist\StellarisFanControlFrontend.exe'),
     (Join-Path $root 'dist\StellarisFanControlBackend.exe'),
@@ -65,6 +67,9 @@ try {
         --add-data "$styleSheet;frontend" `
         --add-data "$(Join-Path $root 'frontend\checkmark.svg');frontend" `
         --add-data "$appIconPng;icon" `
+        --add-data "$($trayIcons[0]);icon" `
+        --add-data "$($trayIcons[1]);icon" `
+        --add-data "$($trayIcons[2]);icon" `
         --add-data "$pawnModule;pawnio" `
         --name StellarisFanControl `
         (Join-Path $root 'stellaris15gen3.py')

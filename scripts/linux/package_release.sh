@@ -11,7 +11,7 @@ mkdir -p "$STAGE/$NAME/scripts/linux" "$STAGE/$NAME/icon" "$STAGE/$NAME/assets" 
 for item in backend frontend shared docs; do
     cp -r "$ROOT/$item" "$STAGE/$NAME/$item"
 done
-cp "$ROOT/icon/stellaris-fan-control.png" "$ROOT/icon/stellaris-fan-control-tray.svg" "$STAGE/$NAME/icon/"
+cp "$ROOT/icon/stellaris-fan-control.png" "$ROOT"/icon/stellaris-fan-control-tray*.svg "$STAGE/$NAME/icon/"
 cp "$ROOT/assets/ss.png" "$STAGE/$NAME/assets/"
 cp "$ROOT"/stellaris15gen3_linux_service.py "$ROOT"/stellaris15gen3_frontend.py \
    "$ROOT"/README.md "$ROOT"/THIRD_PARTY_NOTICES.md "$STAGE/$NAME/"

@@ -5,6 +5,9 @@ Writes, next to this file:
   stellaris-fan-control.png       256 px render of it
   stellaris-fan-control.ico       Windows executable icon, 16-256 px, PNG-compressed
   stellaris-fan-control-tray.svg  light monochrome tray icon for the GNOME top bar
+  stellaris-fan-control-tray-warm.svg, -hot.svg, -hot-dim.svg
+                                  tray icons for warm and hot temperatures (both platforms);
+                                  the two hot icons alternate as a blinking glow
 
 Every shape is computed here: blades are bounded by two circular arcs and the hub circle,
 the gauge is an arc of the housing circle. Run with the repository's virtual environment:
@@ -98,15 +101,33 @@ def app_svg() -> str:
 """
 
 
-def tray_svg() -> str:
+# Tray icon variants: file suffix -> (fan color, glow color or None).
+TRAY_VARIANTS = {
+    "": ("#f2f2f2", None),
+    "-warm": ("#f6d32d", None),
+    "-hot": ("#ff2d2d", "#ff9a2e"),
+    "-hot-dim": ("#b3141c", None),
+}
+
+
+def tray_svg(fill: str = "#f2f2f2", glow: str | None = None) -> str:
     # Designed on the 16 px grid of GNOME's symbolic icons; light so it reads on the dark top bar.
     c = 8
     # Blades start 1 px outside the hub so the hub stays a separate dot at 16 px.
     blades = fan_blades(c, c, hub=3.0, tip=7.6, count=5, root_width=34, tip_width=40, sweep=40,
                         bend=0.75)
+    halo = "" if glow is None else f"""  <defs>
+    <radialGradient id="glow">
+      <stop offset="0" stop-color="{glow}" stop-opacity="0.5"/>
+      <stop offset="0.7" stop-color="{glow}" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="{glow}" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <circle cx="{c}" cy="{c}" r="8" fill="url(#glow)"/>
+"""
     return f"""<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
-  <path d="{blades}" fill="#f2f2f2"/>
-  <circle cx="{c}" cy="{c}" r="1.9" fill="#f2f2f2"/>
+{halo}  <path d="{blades}" fill="{fill}"/>
+  <circle cx="{c}" cy="{c}" r="1.9" fill="{fill}"/>
 </svg>
 """
 
@@ -150,13 +171,16 @@ def main() -> int:
     from PySide6.QtGui import QGuiApplication
 
     app = QGuiApplication.instance() or QGuiApplication(sys.argv[:1] + ["-platform", "offscreen"])
-    app_icon, tray_icon = app_svg(), tray_svg()
+    app_icon = app_svg()
+    names = [f"{APP_NAME}.svg", f"{APP_NAME}.png", f"{APP_NAME}.ico"]
     (HERE / f"{APP_NAME}.svg").write_text(app_icon, encoding="ascii")
-    (HERE / f"{APP_NAME}-tray.svg").write_text(tray_icon, encoding="ascii")
     (HERE / f"{APP_NAME}.png").write_bytes(render_png(app_icon, 256))
     (HERE / f"{APP_NAME}.ico").write_bytes(
         build_ico({size: render_png(app_icon, size) for size in ICO_SIZES}))
-    for name in (f"{APP_NAME}.svg", f"{APP_NAME}-tray.svg", f"{APP_NAME}.png", f"{APP_NAME}.ico"):
+    for suffix, (fill, glow) in TRAY_VARIANTS.items():
+        names.append(f"{APP_NAME}-tray{suffix}.svg")
+        (HERE / names[-1]).write_text(tray_svg(fill, glow), encoding="ascii")
+    for name in names:
         print(HERE / name)
     return 0
 

@@ -30,13 +30,17 @@ class IconTests(unittest.TestCase):
             (ICON_DIRECTORY / "stellaris-fan-control.svg").read_text(encoding="ascii"),
             self.generator.app_svg(),
         )
-        self.assertEqual(
-            (ICON_DIRECTORY / "stellaris-fan-control-tray.svg").read_text(encoding="ascii"),
-            self.generator.tray_svg(),
-        )
+        for suffix, (fill, glow) in self.generator.TRAY_VARIANTS.items():
+            self.assertEqual(
+                (ICON_DIRECTORY / f"stellaris-fan-control-tray{suffix}.svg").read_text(encoding="ascii"),
+                self.generator.tray_svg(fill, glow),
+            )
+        self.assertEqual(self.generator.tray_svg(), self.generator.tray_svg(
+            *self.generator.TRAY_VARIANTS[""]))
 
     def test_tray_and_window_icons_render(self):
-        for name in ("stellaris-fan-control-tray.svg", "stellaris-fan-control.png"):
+        names = [f"stellaris-fan-control-tray{suffix}.svg" for suffix in self.generator.TRAY_VARIANTS]
+        for name in (*names, "stellaris-fan-control.png"):
             icon = QIcon(str(ICON_DIRECTORY / name))
             self.assertFalse(icon.isNull(), name)
             image = icon.pixmap(22, 22).toImage()

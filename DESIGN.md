@@ -200,6 +200,7 @@ The always-available Start minimized checkbox persists a boolean `start_minimize
 | 2026-10-11 | Read Windows CPU package energy with the unchanged pinned PawnIO module and add gated Windows cTGP controls. | CPU reads succeeded on the target; GPU encoding comes from Linux validation and static OEM address metadata, with Windows NVIDIA enforcement still pending. |
 | 2026-10-11 | Validate Windows sustained GPU limits at 115/130/165 W after explicit owner authorization. | NVIDIA followed all three with Dynamic Boost off. Original EC bytes were restored; driver restoration, Boost toggling, load, and restart/resume still need separate evidence. |
 | 2026-10-13 | Generate the icons from geometry (`icon/make_icon.py`) and use a light monochrome tray icon on Linux. | The previous raster icon blurred into an unreadable blob at the 16 px GNOME top-bar size. The tray icon is designed on a 16 px grid like GNOME's symbolic icons; Windows keeps the color icon in its tray because its taskbar can be light. |
+| 2026-10-18 | Color the tray icon by the hottest of CPU and GPU: yellow above 70 C, red above 85 C, blinking between a glowing and a dark red once per second, with one notification per hot episode. | Owner request: overheating must be noticeable while the window is hidden. The notification re-arms only after the reading falls to 70 C or below, so a load hovering at 85 C does not repeat it. A sensor error keeps the last color instead of showing a calm normal. Display only; it never affects fan control. |
 
 ## Release distribution
 

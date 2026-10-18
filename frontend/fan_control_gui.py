@@ -65,6 +65,16 @@ ICON_DIRECTORY = "icon"
 ICON_FILENAME = "stellaris-fan-control.png"
 # Light monochrome icon for the dark GNOME top bar; Windows keeps the color icon in its tray.
 LINUX_TRAY_ICON_FILENAME = "stellaris-fan-control-tray.svg"
+# Both platforms recolor the tray icon by the hottest of CPU and GPU. Hot blinks between
+# a glowing and a dark red once per second and notifies once until it falls back to normal.
+TRAY_WARM_ABOVE_C = 70.0
+TRAY_HOT_ABOVE_C = 85.0
+TRAY_ICON_FILENAMES = {
+    "warm": "stellaris-fan-control-tray-warm.svg",
+    "hot": "stellaris-fan-control-tray-hot.svg",
+    "hot_dim": "stellaris-fan-control-tray-hot-dim.svg",
+}
+TRAY_BLINK_INTERVAL_MS = 500
 SETTINGS_FILENAME = "StellarisFanControl.json"
 PROJECT_URL = "https://github.com/salihmarangoz/stellaris_15_gen3_fanspeed_override"
 LINUX_CONFIG_DIRECTORY = "stellaris-fan-control"
@@ -1208,6 +1218,16 @@ class FanControlWindow(QMainWindow):
         icon = QIcon(str(self._icon_path()))
         self.setWindowIcon(icon)
         tray_icon = QIcon(str(self._icon_path(LINUX_TRAY_ICON_FILENAME))) if self._linux else icon
+        self._tray_icons = {"normal": tray_icon} | {
+            level: QIcon(str(self._icon_path(filename)))
+            for level, filename in TRAY_ICON_FILENAMES.items()
+        }
+        self._tray_level = "normal"
+        self._tray_hot_notified = False
+        self._tray_blink_bright = True
+        self._tray_blink_timer = QTimer(self)
+        self._tray_blink_timer.setInterval(TRAY_BLINK_INTERVAL_MS)
+        self._tray_blink_timer.timeout.connect(self._blink_tray_icon)
         self.tray_icon = QSystemTrayIcon(tray_icon, self)
         self.tray_icon.setToolTip("Fan Control")
         tray_menu = QMenu(self)
@@ -1710,6 +1730,51 @@ class FanControlWindow(QMainWindow):
         self._update_power_draw(temperatures)
         self._show_gpu_thermal_throttling(temperatures.get("gpu_sw_thermal_throttling"))
         self._set_fault("sensor", None)
+        self._update_tray_temperature(temperatures)
+
+    def _update_tray_temperature(self, temperatures: dict[str, Any]) -> None:
+        # A sensor error leaves the icon as it was rather than showing a calm normal.
+        readings = [
+            (name, float(value))
+            for name, value in (("CPU", temperatures.get("cpu_c")), ("GPU", temperatures.get("gpu_c")))
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        ]
+        if not readings:
+            return
+        name, hottest = max(readings, key=lambda reading: reading[1])
+        if hottest > TRAY_HOT_ABOVE_C:
+            level = "hot"
+        elif hottest > TRAY_WARM_ABOVE_C:
+            level = "warm"
+        else:
+            level = "normal"
+        self.tray_icon.setToolTip(f"Fan Control | {name} {hottest:.0f} C")
+        if level == "hot" and not self._tray_hot_notified:
+            self._tray_hot_notified = True
+            self.tray_icon.showMessage(
+                "Fan Control",
+                f"{name} is at {hottest:.0f} C, above {TRAY_HOT_ABOVE_C:.0f} C.",
+                QSystemTrayIcon.MessageIcon.Warning,
+                10000,
+            )
+        elif level == "normal":
+            self._tray_hot_notified = False
+        if level == self._tray_level:
+            return
+        self._tray_level = level
+        self._tray_blink_bright = True
+        if level == "hot":
+            self._tray_blink_timer.start()
+        else:
+            self._tray_blink_timer.stop()
+        self.tray_icon.setIcon(self._tray_icons[level])
+
+    def _blink_tray_icon(self) -> None:
+        if self._tray_level != "hot":
+            self._tray_blink_timer.stop()
+            return
+        self._tray_blink_bright = not self._tray_blink_bright
+        self.tray_icon.setIcon(self._tray_icons["hot" if self._tray_blink_bright else "hot_dim"])
 
     def _show_gpu_thermal_throttling(self, active: Any) -> None:
         self.gpu_thermal_warning.setVisible(active is True)
