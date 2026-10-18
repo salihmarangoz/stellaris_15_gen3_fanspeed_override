@@ -1,5 +1,6 @@
 import subprocess
 import os
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -78,6 +79,15 @@ class GpuDisplayTests(unittest.TestCase):
                 window.gpu_power_equation_label.setText.assert_called_once_with(expected)
 
 
+def wait_until(condition, timeout=2.0):
+    # PySide6's QTest has no qWaitFor; poll while processing Qt events.
+    from PySide6.QtTest import QTest
+
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        QTest.qWait(10)
+
+
 class GpuSliderTests(unittest.TestCase):
     def test_drag_cancels_pending_apply_and_release_sends_only_final_value(self):
         os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -112,13 +122,15 @@ class GpuSliderTests(unittest.TestCase):
                 window.apply_gpu_power()
                 backend.request.assert_not_called()
                 slider.setSliderDown(False)
-                QTest.qWait(50)
+                # Wait for the debounce rather than a fixed time: slow CI runners
+                # fire the 25 ms timer late (Windows release run 2026-10-18).
+                wait_until(lambda: backend.request.called)
                 backend.request.assert_called_once_with('set_gpu_power', offset=35)
 
                 # Keyboard control still applies after its debounce interval.
                 backend.request.reset_mock()
                 slider.triggerAction(QAbstractSlider.SliderAction.SliderSingleStepAdd)
-                QTest.qWait(50)
+                wait_until(lambda: backend.request.called)
                 backend.request.assert_called_once_with('set_gpu_power', offset=40)
             finally:
                 window._closing = True

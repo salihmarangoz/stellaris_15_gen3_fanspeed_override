@@ -934,6 +934,7 @@ class BackupPruningTests(unittest.TestCase):
             self.assertTrue((directory / "unrelated.json").exists())
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux service only")
 class LinuxCliTests(unittest.TestCase):
     def test_boost_off_keeps_the_table_duty_but_never_below_the_floor(self) -> None:
         from backend import linux_fan_control
