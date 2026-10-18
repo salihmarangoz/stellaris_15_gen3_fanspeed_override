@@ -65,7 +65,8 @@ Last reviewed: 2026-10-16
 |   |-- __init__.py              shared package marker
 |   |-- bounded_operation.py     bounded waits, single in-flight operation, no queue
 |   |-- fan_control_common.py    pure automatic curve and shared lightbar validation
-|   `-- fan_control_ipc.py       IPC, endpoint, and privilege-aware launches
+|   |-- fan_control_ipc.py       IPC, endpoint, and privilege-aware launches
+|   `-- version.py               APP_VERSION and the version shown in the GUI header
 |-- tests\
 |   |-- __init__.py              test package marker
 |   |-- test_fan_control_backend.py
@@ -81,6 +82,7 @@ Last reviewed: 2026-10-16
 |   |-- test_operation_safety_gui.py real offscreen deadline recovery and truthful safety warnings
 |   |-- test_window_reveal.py    Windows main-window cloak until first frame, fallback reveal
 |   |-- test_tray_temperature.py tray icon color, hot blink and one-time hot notification
+|   |-- test_version.py          release, installed-build and git-checkout version display
 |   |-- test_packaged_startup.py real Qt check that must not import hardware backends
 |   |-- test_icons.py            committed icons match the generator and render
 |   |-- test_linux_polkit.py     mocked pkcheck subject, refusals, timeout, and /proc start time
@@ -167,6 +169,7 @@ Linux runtime paths:
 
 ```text
 /opt/stellaris-fan-control/          installed application (root-owned)
+|-- build-version.txt                `git describe` build, only when installed from a checkout
 `-- .venv/                           PySide6 environment for the GUI
 /etc/stellaris-fan-control/config.json   allowed_uids for the service socket
 /etc/systemd/system/stellaris-fan-control.service

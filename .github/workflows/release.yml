@@ -71,6 +71,12 @@ jobs:
           ./.venv/bin/python -m pip install -r requirements.txt
       - name: Compile source
         run: ./.venv/bin/python -m compileall -q backend frontend shared scripts/linux stellaris15gen3_linux_service.py stellaris15gen3_frontend.py
+      - name: Check that the tag matches APP_VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          ./.venv/bin/python -c "import os, sys; from shared.version import APP_VERSION; tag = os.environ['TAG']; sys.exit(None if tag == 'v' + APP_VERSION else f'Tag {tag} does not match APP_VERSION {APP_VERSION} in shared/version.py')"
       - name: Run mocked tests without hardware access
         env:
           QT_QPA_PLATFORM: offscreen

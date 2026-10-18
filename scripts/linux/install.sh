@@ -75,6 +75,13 @@ install -m 644 "$SOURCE_DIR/icon/stellaris-fan-control.png" "$SOURCE_DIR"/icon/s
 for file in stellaris15gen3_linux_service.py stellaris15gen3_frontend.py README.md THIRD_PARTY_NOTICES.md; do
     install -m 644 "$SOURCE_DIR/$file" "$APP_DIR/$file"
 done
+# Record the exact build when installing from a git checkout; release archives
+# carry no .git and show their release version.
+rm -f "$APP_DIR/build-version.txt"
+if [ -e "$SOURCE_DIR/.git" ] && command -v git >/dev/null; then
+    build="$(sudo -u "$TARGET_USER" git -C "$SOURCE_DIR" describe --tags --dirty --always 2>/dev/null || true)"
+    [ -n "$build" ] && printf '%s\n' "$build" > "$APP_DIR/build-version.txt"
+fi
 find "$APP_DIR" -name __pycache__ -type d -prune -exec rm -rf {} +
 chown -R root:root "$APP_DIR"
 chmod -R u=rwX,go=rX "$APP_DIR"

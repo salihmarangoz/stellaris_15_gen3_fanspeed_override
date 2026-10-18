@@ -63,7 +63,7 @@ The **Release** workflow (`.github/workflows/release.yml`):
 - runs the same tests on Ubuntu 24.04 and packages the Linux source release `StellarisFanControl-linux.tar.gz` with its checksum;
 - never installs PawnIO, touches the EC, or launches the application.
 
-After committing and pushing, push a new version tag:
+Set `APP_VERSION` in `shared/version.py` to the new version and commit it; the Linux job refuses a tag that does not match, so nothing is published. The GUI shows this version in its header; installs from a git checkout show the exact `git describe` build instead. After committing and pushing, push the matching version tag:
 
 ```bash
 git tag v1.2.0

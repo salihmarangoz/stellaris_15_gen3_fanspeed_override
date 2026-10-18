@@ -16,6 +16,12 @@ QLabel#statusText, QLabel#reportedValue {
     color: #aeb6bd;
 }
 
+QLabel#versionLabel {
+    color: #7d868e;
+    font-size: 12px;
+    padding-bottom: 4px;
+}
+
 QLabel#fanName {
     font-size: 15px;
     font-weight: 600;

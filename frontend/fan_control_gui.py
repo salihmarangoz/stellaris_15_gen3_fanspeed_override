@@ -49,6 +49,7 @@ from shared.fan_control_common import (
     MIN_AUTO_DUTY,
     auto_target,
 )
+from shared.version import display_version
 from shared.fan_control_ipc import (
     BackendClient,
     LINUX_SERVICE_NAME,
@@ -847,6 +848,9 @@ class FanControlWindow(QMainWindow):
         heading = QLabel("Fan Control")
         heading.setObjectName("heading")
         heading_row.addWidget(heading)
+        self.version_label = QLabel(display_version())
+        self.version_label.setObjectName("versionLabel")
+        heading_row.addWidget(self.version_label, 0, Qt.AlignmentFlag.AlignBottom)
         heading_row.addStretch()
         self.control_method_label = QLabel("Detecting control...")
         self.control_method_label.setObjectName("methodBadge")
