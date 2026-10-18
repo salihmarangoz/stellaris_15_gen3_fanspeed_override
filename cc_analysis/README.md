@@ -16,3 +16,4 @@ numeric facts and independently written summaries here, and raw OEM artifacts
 out of Git.
 
 - [Control Center 4.9 fan transport](control-center-4.9-fans.md): exact-image support, subsystem bit preservation and owner-authorized Windows test.
+- [Windows EC driver busy-wait](windows-ec-driver-busy-wait.md): why each Direct EC byte costs ~9 ms (a 4 MiB request and a do-nothing driver loop) and the IOCTL layout.

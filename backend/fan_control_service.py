@@ -422,6 +422,9 @@ class ControlCenterService:
         self, cpu: int, gpu: int, *, create_backup: bool = True, backup_required: bool = True
     ) -> dict[str, Any]:
         def operation(client: ControlCenterClient | DirectEcClient) -> dict[str, Any]:
+            if not create_backup and client.method_name == "direct_ec" and client.uniform_duty_verified(cpu, gpu):
+                # Unchanged target already verified on the EC; no read of the full table.
+                return {"backup": None, "cpu": cpu, "gpu": gpu, "table": "DIRECT_EC"}
             status = client.status()
             name = str(status["FAN_TableName"])
             existing = client.curve(name)
@@ -438,7 +441,9 @@ class ControlCenterService:
             if client.method_name == "oem_mqtt":
                 save_oem_curve_cache(updated)
             client.set_curve(updated)
-            client.set_boost(False)
+            if client.method_name != "direct_ec":
+                # Direct set_curve already verified the same non-Boost mode bytes.
+                client.set_boost(False)
             return {
                 "backup": str(backup) if backup else None,
                 "cpu": cpu,

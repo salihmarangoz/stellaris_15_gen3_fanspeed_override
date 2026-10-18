@@ -327,6 +327,97 @@ class DirectEcTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "broker"):
             client.set_boost(True)
 
+    def service_with(self, client: DirectEcClient) -> ControlCenterService:
+        ControlCenterService._instance = None
+        self.addCleanup(setattr, ControlCenterService, "_instance", None)
+        service = ControlCenterService()
+        service._client, service._method = client, "direct_ec"
+        broker = patch("backend.fan_control_service.oem_broker_available", return_value=False)
+        broker.start()
+        self.addCleanup(broker.stop)
+        return service
+
+    def count_reads(self, client: DirectEcClient) -> list[int]:
+        reads: list[int] = []
+        original = client._read_ec
+
+        def read(address: int) -> int:
+            reads.append(address)
+            return original(address)
+
+        client._read_ec = read
+        return reads
+
+    def test_unchanged_auto_target_reads_only_duties_and_mode_bytes(self) -> None:
+        client, memory, writes = self.make_client()
+        service = self.service_with(client)
+        service.apply_manual(60, 60, create_backup=False)
+        self.assertTrue(writes)
+        writes.clear()
+        reads = self.count_reads(client)
+        service.apply_manual(60, 60, create_backup=False)
+        self.assertEqual(writes, [])
+        self.assertEqual(len(reads), 36)
+        self.assertTrue(all(not 0x0F00 <= address < 0x0F20 and not 0x0F30 <= address < 0x0F50
+                            for address in reads))
+        reads.clear()
+        service.apply_manual(65, 65, create_backup=False)
+        self.assertEqual(memory[GPU_TABLE_DUTY_ADDRESS + 7], 130)
+        self.assertGreater(len(reads), 96)
+
+    def test_short_check_falls_back_to_the_full_check(self) -> None:
+        client, memory, writes = self.make_client()
+        service = self.service_with(client)
+        service.apply_manual(60, 60, create_backup=False)
+        written = dict(memory)
+        reads = self.count_reads(client)
+        for address, value in ((CPU_TABLE_DUTY_ADDRESS + 9, 0), (FAN_CONTROL_ADDRESS, 0x40),
+                               (FAN_SUBSYSTEM_STATE_ADDRESS, 1)):
+            with self.subTest(address=hex(address)):
+                memory[address] = value
+                writes.clear()
+                reads.clear()
+                service.apply_manual(60, 60, create_backup=False)
+                self.assertIn((address, written[address]), writes)
+                self.assertEqual(memory, written)
+                self.assertGreater(len(reads), 96)
+        # A drifted threshold is invisible to the short check until the full one.
+        memory[GPU_TEMP_UP_ADDRESS + 2] = 90
+        reads.clear()
+        service.apply_manual(60, 60, create_backup=False)
+        self.assertEqual(len(reads), 36)
+        clock = __import__("time").monotonic() + 301
+        with patch("backend.direct_fan_control.time.monotonic", return_value=clock):
+            reads.clear()
+            service.apply_manual(60, 60, create_backup=False)
+        self.assertGreater(len(reads), 96)
+
+    def test_any_ec_write_backup_or_reconnect_forces_the_full_check(self) -> None:
+        client, memory, writes = self.make_client()
+        service = self.service_with(client)
+        service.apply_manual(60, 60, create_backup=False)
+        reads = self.count_reads(client)
+        client.write_lightbar("off", (0, 0, 0))
+        reads.clear()
+        service.apply_manual(60, 60, create_backup=False)
+        self.assertGreater(len(reads), 96)
+        with TemporaryDirectory() as directory,                 patch("backend.fan_control_service.save_backup",
+                      return_value=Path(directory) / "backup.json") as backup:
+            reads.clear()
+            service.apply_manual(60, 60, create_backup=True)
+        backup.assert_called_once()
+        self.assertGreater(len(reads), 96)
+        client.close()
+        self.assertFalse(client.uniform_duty_verified(60, 60))
+
+    def test_restored_oem_mode_is_never_short_checked(self) -> None:
+        client, memory, _ = self.make_client()
+        curve = client.curve("DIRECT_EC")
+        curve["DirectControl"]["fan_control"] = 0x00
+        client.restore_curve(fixed_curve(curve, 60, 60, include_idle=True))
+        self.assertEqual(memory[FAN_CONTROL_ADDRESS], 0x00)
+        self.assertFalse(client.uniform_duty_verified(60, 60))
+
     def test_direct_curve_decodes_oem_half_percent_units(self) -> None:
         client, _, _ = self.make_client()
         curve = client.curve("DIRECT_EC")

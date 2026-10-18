@@ -66,6 +66,10 @@ TABLE_POINT_COUNT = 16
 # curve() hands its table read to the write that immediately follows it in the
 # same operation. Any EC write, or this much time, discards it.
 TABLE_SNAPSHOT_SECONDS = 1.0
+# Between complete table checks, an unchanged Auto target only re-reads the 32
+# duty and 4 mode bytes. With one duty in all 16 zones the 64 temperature
+# thresholds cannot change the fan speed.
+FULL_TABLE_CHECK_SECONDS = 300.0
 
 FAN_CONTROL_BOOST = 0x40
 FAN_CONTROL_USER_HIGH = 0xA0
@@ -151,6 +155,8 @@ class DirectEcClient:
         self._read_ec: Callable[[int], int] | None = None
         self._write_ec: Callable[[int, int], None] | None = None
         self._table_snapshot: tuple[float, dict[str, list[int]]] | None = None
+        # (time, complete table, mode bytes) last verified as the active user curve.
+        self._verified: tuple[float, dict[str, list[int]], tuple[int, int, int, int]] | None = None
 
     def connect(self) -> None:
         if self._library is not None:
@@ -195,6 +201,7 @@ class DirectEcClient:
 
     def close(self) -> None:
         self._table_snapshot = None
+        self._verified = None
         self._read_ec = None
         self._write_ec = None
         self._library = None
@@ -223,6 +230,7 @@ class DirectEcClient:
         if not 0 <= value <= 0xFF:
             raise ValueError(f"Invalid EC byte for 0x{address:04X}: {value}")
         self._table_snapshot = None
+        self._verified = None
         self._write_ec(address, value)
 
     def _read_range(self, address: int, count: int = TABLE_POINT_COUNT) -> list[int]:
@@ -513,6 +521,38 @@ class DirectEcClient:
             raise
         return changed
 
+    def _mode_bytes(self) -> tuple[int, int, int, int]:
+        return (
+            self._read(FAN_CONTROL_ADDRESS),
+            self._read(FAN_CONTROL_MIRROR_ADDRESS),
+            self._read(AP_EXISTS_ADDRESS),
+            self._read(FAN_SUBSYSTEM_STATE_ADDRESS),
+        )
+
+    def uniform_duty_verified(self, cpu: int, gpu: int) -> bool:
+        """Confirm an unchanged uniform target with 36 reads instead of a full check.
+
+        True only within FULL_TABLE_CHECK_SECONDS of a complete verification
+        with no EC write since, for the same duties, and when the live duty and
+        mode bytes still match. Anything else needs the complete path.
+        """
+        verified = self._verified
+        if verified is None or not 0 <= time.monotonic() - verified[0] <= FULL_TABLE_CHECK_SECONDS:
+            return False
+        _, table, modes = verified
+        expected = {"cpu_duty": [self._encode_duty(cpu)] * TABLE_POINT_COUNT,
+                    "gpu_duty": [self._encode_duty(gpu)] * TABLE_POINT_COUNT}
+        if any(table[key] != values for key, values in expected.items()):
+            return False
+        live = {
+            "cpu_duty": self._read_range(CPU_TABLE_DUTY_ADDRESS),
+            "gpu_duty": self._read_range(GPU_TABLE_DUTY_ADDRESS),
+        }
+        if live != expected or self._mode_bytes() != modes:
+            self._verified = None
+            return False
+        return True
+
     def set_curve(self, curve: dict[str, Any]) -> bool:
         return self._write_curve(curve, FAN_CONTROL_USER_HIGH)
 
@@ -554,6 +594,7 @@ class DirectEcClient:
         ):
             # The fresh reads verify the state. Rewriting it would cost about
             # 200 more busy-waiting driver transactions every Auto cycle.
+            self._remember_verified(control, previous, (control, mirror, 1, subsystem))
             return False
         try:
             self._write(AP_EXISTS_ADDRESS, 1)
@@ -590,7 +631,15 @@ class DirectEcClient:
             self._write(AP_EXISTS_ADDRESS, previous_ap_exists)
             self._write(FAN_SUBSYSTEM_STATE_ADDRESS, previous_subsystem_state)
             raise
+        self._remember_verified(control, encoded, (control, mirror, 1, subsystem))
         return True
+
+    def _remember_verified(
+        self, control: int, table: dict[str, list[int]], modes: tuple[int, int, int, int]
+    ) -> None:
+        # Only the user curve qualifies; a restored OEM mode is never short-checked.
+        if control == FAN_CONTROL_USER_HIGH:
+            self._verified = (time.monotonic(), copy.deepcopy(table), modes)
 
     def set_boost(self, enabled: bool) -> None:
         if self._broker_available():
