@@ -32,7 +32,7 @@ This repository contains experimental, hardware-specific fan control for a Stell
 - `backend/fan_control_backend.py`: PySide-free backend process, automatic control scheduler, IPC server, and frontend watchdog.
 - `shared/fan_control_ipc.py`: authenticated loopback IPC client plus process launch and 60-second restart-cooldown helpers.
 - `shared/fan_control_common.py`: pure automatic-curve calculation and lightbar validation shared by both platforms.
-- `backend/direct_fan_control.py`: validated Windows OEM DLL access, fan tables, optional RPM telemetry, and gated, verified cTGP/lightbar writes.
+- `backend/direct_fan_control.py`: validated Windows OEM DLL writes, hash-gated direct driver reads, fan tables, optional RPM telemetry, and gated, verified cTGP/lightbar writes.
 - `frontend/fan_control_gui.py`: PySide6 frontend, display timers, worker lifecycle, backend watchdog, and single-GUI enforcement.
 - `frontend/stellaris15gen3.css`: the complete frontend stylesheet.
 - `stellaris15gen3.py`: elevated single-process packaged entry point with an in-process controller client.
@@ -136,6 +136,7 @@ QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m unittest discover -s tests
 
 - The additional exact DLL hash ee2c506dd414222013e6dbe5c67a774b1fa1387a47ad5d705a82f048c1a945bb requires the exact Windows board/SKU/BIOS and EC universal-control bit. Keep unknown libraries refused.
 - On that image subsystem states 0/1/3/4/5/7 are accepted; set only bit 2 of 0x07C6 and bit 7 of 0x07C5 while preserving other bits. The owner-authorized target check observed 3 becoming 7, uniform raw 90 fan tables and both RPM readings with the OEM service stopped. Sustained Auto and additional feature checks remain pending.
+- Windows Direct EC reads go straight to UWACPIDriver's read IOCTL `0x9C40A488` (address dword, 64-byte buffer, one handle) only when the driver file matches SHA-256 e9840521975e9073881a488f9e978a18c93aed44c57fe2382b1d513fd27126e2 (owner decision 2026-10-18; byte-identical to `ReadEC` for all 110 static allowlisted bytes in an elevated read-only comparison). Otherwise reads use the pinned DLL. All writes still use the DLL's `WriteEC`; sending the write IOCTL directly requires an explicitly authorized write test first. Never send any other driver IOCTL. Details: cc_analysis/windows-ec-driver-busy-wait.md.
 - Check OEM broker ownership before every individual direct EC write, including rollback. Keep OEM driver/DLL installed when stopping its UI/service. Details: cc_analysis/control-center-4.9-fans.md.
 - Windows ownership checks use the fresh IPv6 listener table in backend/windows_broker.py. Cache only the System32 API binding, never absence; query/parsing errors must refuse writes. Do not reintroduce timed socket connects per byte or weaken exclusion to improve performance. Authorized Manual latency results and the owner's 50% test floor: cc_analysis/windows-direct-ec-latency.md.
 

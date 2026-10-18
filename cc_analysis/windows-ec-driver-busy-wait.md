@@ -20,3 +20,14 @@ Other dispatch codes seen: `0x9C40A480`, `0x9C40A484`, `0x9C40A490` (`ReadMEMB`)
 ## Implication
 
 The cost is a fixed delay chosen by the DLL's buffer size, not the EC handshake. Sending the same two IOCTLs directly, with a small buffer (for example 64 bytes, large enough for the returned integer) and one handle kept open, would run the same `ECRR`/`ECRW` methods with a 64-iteration delay instead of 4,194,304. Bypassing the DLL moves the supply-chain boundary from the DLL hash to the driver hash and the reverse-engineered request layout. It needs an elevated read-only comparison against `ReadEC` on the target before any write uses it.
+
+## Elevated read-only comparison (2026-10-18)
+
+An ignored elevated script (`build/qa/ec-ioctl-probe/probe.py`) checked both file hashes above, then read each address through `ReadEC` and through IOCTL `0x9C40A488` sent directly on one persistent handle with 64-byte input and output buffers. It sent no other IOCTL and no write. The GUI was running in Automatic mode at the time.
+
+- All 110 static bytes matched: `0x0740`, `0x0741`, `0x0751`, `0x07C5`, `0x07C6`, `0x078E`, cTGP `0x0743`-`0x0746`, lightbar `0x0748`-`0x074B` and the table `0x0F00`-`0x0F5F`. Each byte was read through the library before and after the direct read, and all three readings agreed.
+- Live bytes also agreed: duties `0x075B`/`0x075C` (110 = 55%) and RPM `0x0464`-`0x0465`, `0x046C`-`0x046D` (2789 and 2875 rpm).
+- The driver reported 64 returned bytes; the result is the value in byte 0 followed by zeros (`0x0740` returned `10 00 00 ...`).
+- Time per read: `ReadEC` 7.715 ms (20 reads), direct request 0.0827 ms (500 reads), about 93 times faster. The remaining time is ACPI evaluating `ECRR`.
+
+The backend now uses the direct request for reads with this exact driver image. Writes still go through `WriteEC`.

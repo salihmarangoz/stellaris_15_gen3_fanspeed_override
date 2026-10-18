@@ -74,6 +74,7 @@ Last reviewed: 2026-10-16
 |   |-- test_windows_gpu_power.py cTGP gates, NVIDIA limits, verified writes, OEM refusal, persistence
 |   |-- test_windows_broker.py   listener-table parsing, bounds, API errors, and fail-closed writes
 |   |-- test_nvidia_helper.py    NVIDIA helper protocol, hang kill/restart, powered-off GPU handling
+|   |-- test_windows_driver_reads.py hash-gated direct driver EC reads, library writes, handle cleanup
 |   |-- test_operation_safety.py stalled sensors/EC, late-write ordering, Boost failure/recovery, deadlines
 |   |-- test_operation_safety_gui.py real offscreen deadline recovery and truthful safety warnings
 |   |-- test_packaged_startup.py real Qt check that must not import hardware backends
