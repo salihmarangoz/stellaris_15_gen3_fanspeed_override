@@ -106,6 +106,7 @@ sudo python3 -m backend.linux_fan_control restore /var/lib/stellaris-fan-control
 All tests below ran on the one validated laptop.
 
 - **Fan tables**: a live test confirmed that the EC follows the tables written by the service and that Boost reaches 100% within seconds.
-- **Dynamic Boost** (2026-10-13): a GPU-only stress test held 140 W with no cTGP offset.
+- **Dynamic Boost** (2026-10-13): a GPU-only stress test held 140 W with no cTGP offset. Turning it off (2026-10-18) dropped the limit to 115 W within about 2 seconds and held it under load.
+- **Higher GPU power** (2026-10-18, Dynamic Boost off, 180-second GPU-only loads): +25 W held a 140 W limit with up to 139.9 W draw, GPU 77 C, fans 95%. +50 W held 165 W with 163 W average draw, GPU 86 C and still rising about 1 C per 30 seconds at the end, fans 100%; only the power cap limited the GPU. Longer loads at +50 W will likely reach NVIDIA's 87 C thermal target.
 - **NVIDIA Optimus** (2026-10-16, owner-run): the password dialog appeared after **YES DO IT**, polkit granted a one-shot authorization, and the save changed only byte `0x62`. Still to check: Cancel and a wrong password leave everything untouched, the immutable-flag path after a fresh boot, and that the next boot uses the saved mode.
 - **Sensor-loss Boost**: not yet tested live on Ubuntu with a real sensor failure.

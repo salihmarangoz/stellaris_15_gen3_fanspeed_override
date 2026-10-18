@@ -60,9 +60,11 @@ Confirm on the laptop that the resume hook's `SIGUSR1` re-applies the table and 
 
 ## HIGH - Validate the Dynamic Boost checkbox on Linux
 
-The switch clears or sets EC `0x0743` bit 1 like TUXEDO's `db_enable`, but its effect on NVIDIA's enforced limit has not been measured yet. With `nvidia-powerd` running, confirm that turning it off lowers `enforced.power.limit` by the boost room, that the choice survives a service restart, suspend and resume, and that the mainline driver's resume re-enable is corrected.
+The switch clears or sets EC `0x0743` bit 1 like TUXEDO's `db_enable`. With `nvidia-powerd` running, confirm that the choice survives a service restart, suspend and resume, and that the mainline driver's resume re-enable is corrected.
 
-On 2026-10-13, with Dynamic Boost on, a +0 W offset and `nvidia-powerd` running, an authorized 60-second GPU-only `stress_test.py --no-cpu` held `enforced.power.limit` at 140 W (115 W + 25 W boost) for the whole load, with 139-140 W draw, GPU 71 C, CPU 68 C and fans at 85%. At idle the limit returns to 115 W, which is NVIDIA's normal Dynamic Boost behavior. Turning the switch off, and persistence across restart, suspend and resume, remain unvalidated.
+On 2026-10-13, with Dynamic Boost on, a +0 W offset and `nvidia-powerd` running, an authorized 60-second GPU-only `stress_test.py --no-cpu` held `enforced.power.limit` at 140 W (115 W + 25 W boost) for the whole load, with 139-140 W draw, GPU 71 C, CPU 68 C and fans at 85%. At idle the limit returns to 115 W, which is NVIDIA's normal Dynamic Boost behavior.
+
+On 2026-10-18 (authorized) turning the switch off through the service dropped `enforced.power.limit` from 140 W to 115 W within about 2 seconds, and a 60-second GPU-only load then drew 114.7-114.8 W (GPU 66 C, fans 75%). Persistence of the off state across a service restart, suspend and resume, and the correction of the mainline driver's resume re-enable, remain unvalidated.
 
 ## MEDIUM - Validate the lightbar on battery, after suspend, and after reboot
 
@@ -71,10 +73,6 @@ The lightbar registers (`0x0748` bit 7, `0x0749`-`0x074B`) were validated live o
 ## LOW - Defer to a kernel lightbar driver if one appears
 
 If a future `uniwill-laptop` enables its lightbar LED (`uniwill:multicolor:status`) for `GMxZGxx`, or `tuxedo-drivers` is loaded again, the kernel and the service would both write the lightbar and the service's 15-second check would override changes made through sysfs. Detect that LED and route the lightbar through it, as cTGP already prefers the kernel attribute.
-
-## MEDIUM - Stress-test higher GPU power limits on Linux
-
-The 2026-09-29 stress test ran at the 115 W base without `nvidia-powerd`; the 2026-10-13 Dynamic Boost run above reached 140 W for 60 s only. Repeat `scripts/linux/stress_test.py` at +25 W and +50 W and confirm the enforced limit, temperatures, and fan response stay within safe margins.
 
 ## LOW - Consider a Debian package
 
