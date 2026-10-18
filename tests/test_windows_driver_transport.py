@@ -41,6 +41,12 @@ def transport_with(kernel32: FakeKernel32) -> DriverEcTransport:
 
 
 class DriverTransportTests(unittest.TestCase):
+    def setUp(self):
+        # ctypes.get_last_error exists only on Windows; the error path uses it.
+        patcher = patch("ctypes.get_last_error", create=True, return_value=1)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_read_sends_only_the_small_read_ioctl_and_returns_the_low_byte(self):
         kernel32 = FakeKernel32(bytes([0x10, 0, 0, 0, 0, 0, 0, 0]))
         transport = transport_with(kernel32)
@@ -93,8 +99,11 @@ class ClientTransportTests(unittest.TestCase):
         self.library = SimpleNamespace(ReadEC=Mock(side_effect=self.memory.__getitem__),
                                        WriteEC=Mock(side_effect=self.memory.__setitem__))
         self.loader = Mock(return_value=self.library)
+        # Patching os.name changes it process-wide, so pathlib on Linux would then
+        # refuse to build paths; the OEM curve cache lookup is the one that does.
         for target, value in (("hashlib.sha256", Mock(return_value=SimpleNamespace(
-                hexdigest=lambda: ACPI_LIBRARY_SHA256))), ("os.name", "nt")):
+                hexdigest=lambda: ACPI_LIBRARY_SHA256))), ("os.name", "nt"),
+                              ("load_oem_curve_cache", Mock(return_value=None))):
             patcher = patch(f"backend.direct_fan_control.{target}", value)
             patcher.start()
             self.addCleanup(patcher.stop)
