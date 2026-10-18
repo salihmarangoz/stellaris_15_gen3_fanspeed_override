@@ -985,6 +985,36 @@ class LinuxServiceSettingsTests(unittest.TestCase):
             self.assertEqual(load_allowed_uids(config), frozenset({0}))
         LinuxFanService._instance = None
 
+    def test_sensor_loss_boost_start_and_end_reach_the_journal_once(self) -> None:
+        # Live finding 2026-10-18: a sensor-loss Boost left no journal line,
+        # and none at all in Manual mode.
+        from backend.linux_backend import LinuxBackendController
+
+        LinuxFanService._instance = None
+        with TemporaryDirectory() as directory:
+            controller = LinuxBackendController(Path(directory) / "settings.json")
+            controller._service = FakeLinuxService()
+            controller.set_mode(False, 40, 80)
+            controller.apply_manual(60, 60, confirmed_low=False)
+            with patch("backend.fan_control_backend.read_temperatures", side_effect=RuntimeError("gone")):
+                controller._last_sensor_success -= SENSOR_STALE_TIMEOUT_SECONDS
+                with self.assertLogs("stellaris15gen3", "WARNING") as logs:
+                    controller._check_sensors()
+                self.assertEqual(len(logs.output), 1)
+                self.assertIn("gone", logs.output[0])
+                self.assertIn("Fan Boost confirmed", logs.output[0])
+                controller._last_sensor_attempt = None
+                with self.assertNoLogs("stellaris15gen3"):
+                    controller._check_sensors()
+            controller._last_sensor_attempt = None
+            with patch("backend.fan_control_backend.read_temperatures",
+                       return_value=SensorReadings(60.0, 50.0, "cpu", "gpu")):
+                with self.assertLogs("stellaris15gen3", "INFO") as logs:
+                    controller._check_sensors()
+            self.assertEqual(len(logs.output), 1)
+            self.assertIn("restored Manual 60/60%", logs.output[0])
+        LinuxFanService._instance = None
+
 
 if __name__ == "__main__":
     unittest.main()

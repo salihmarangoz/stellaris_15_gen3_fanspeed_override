@@ -15,6 +15,7 @@ from shared.fan_control_common import (
     AUTO_INTERVAL_SECONDS,
     DEFAULT_MAX_FAN_TEMP,
     DEFAULT_MIN_FAN_TEMP,
+    SENSOR_STALE_TIMEOUT_SECONDS,
 )
 from shared.fan_control_ipc import linux_socket_path
 from backend.fan_control_backend import BackendController, BackendRequestHandler
@@ -112,6 +113,8 @@ class LinuxBackendController(BackendController):
         self._resync_requested = threading.Event()
         self._logged_auto_error: str | None = None
         self._logged_maintenance_error: str | None = None
+        # Last sensor-loss Boost state written to the journal: None, "on" or "failed".
+        self._logged_sensor_emergency: str | None = None
         self._gpu_power_offset: int | None = None
         self._dynamic_boost: bool | None = None
         self._lightbar: tuple[str, list[int]] | None = None
@@ -226,6 +229,49 @@ class LinuxBackendController(BackendController):
             elif self._logged_auto_error:
                 LOGGER.info("Automatic control recovered")
             self._logged_auto_error = error
+
+    def _check_sensors(self) -> None:
+        try:
+            super()._check_sensors()
+        finally:
+            self._log_sensor_emergency()
+
+    def _log_sensor_emergency(self) -> None:
+        # Only the watchdog thread calls this, so the logged state needs no lock.
+        with self._state_lock:
+            emergency = self._sensor_emergency
+            automatic = self._automatic
+            kept_boost = self._emergency_kept_user_boost
+            duties = self._last_written_duties
+        with self._sensor_status_lock:
+            sensor_error = self._last_sensor_error
+        output = self._output_status()
+        if not emergency:
+            state = None
+        elif output["emergency_boost_confirmed"]:
+            state = "on"
+        else:
+            state = "failed"
+        if state == self._logged_sensor_emergency:
+            return
+        if state == "on":
+            LOGGER.warning(
+                "No valid temperature reading for %d s (%s); Fan Boost confirmed at 100%% on both fans",
+                SENSOR_STALE_TIMEOUT_SECONDS, sensor_error,
+            )
+        elif state == "failed":
+            LOGGER.error(
+                "No valid temperature reading for %d s (%s) and Fan Boost was not confirmed: %s",
+                SENSOR_STALE_TIMEOUT_SECONDS, sensor_error, output["boost_error"],
+            )
+        elif kept_boost:
+            LOGGER.info("Temperature readings recovered; Fan Boost stays on as selected")
+        elif automatic:
+            LOGGER.info("Temperature readings recovered; resuming Automatic control")
+        else:
+            cpu, gpu = duties or (100, 100)
+            LOGGER.info("Temperature readings recovered; restored Manual %d/%d%%", cpu, gpu)
+        self._logged_sensor_emergency = state
 
     def _maintenance_loop(self) -> None:
         while not self._stop_event.is_set():

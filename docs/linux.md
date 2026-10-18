@@ -64,6 +64,8 @@ systemctl status stellaris-fan-control
 journalctl -u stellaris-fan-control
 ```
 
+The journal records failed Automatic cycles, EC drift repairs, and the start and end of a sensor-loss Boost.
+
 The service keeps its settings in `/var/lib/stellaris-fan-control/settings.json` and fan backups in `/var/lib/stellaris-fan-control/fan-backups`. The GUI keeps its own preferences in `~/.config/stellaris-fan-control/StellarisFanControl.json`.
 
 ## Low-Level CLI
@@ -109,4 +111,4 @@ All tests below ran on the one validated laptop.
 - **Dynamic Boost** (2026-10-13): a GPU-only stress test held 140 W with no cTGP offset. Turning it off (2026-10-18) dropped the limit to 115 W within about 2 seconds and held it under load.
 - **Higher GPU power** (2026-10-18, Dynamic Boost off, 180-second GPU-only loads): +25 W held a 140 W limit with up to 139.9 W draw, GPU 77 C, fans 95%. +50 W held 165 W with 163 W average draw, GPU 86 C and still rising about 1 C per 30 seconds at the end, fans 100%; only the power cap limited the GPU. Longer loads at +50 W will likely reach NVIDIA's 87 C thermal target.
 - **NVIDIA Optimus** (2026-10-16, owner-run): the password dialog appeared after **YES DO IT**, polkit granted a one-shot authorization, and the save changed only byte `0x62`. Still to check: Cancel and a wrong password leave everything untouched, the immutable-flag path after a fresh boot, and that the next boot uses the saved mode.
-- **Sensor-loss Boost**: not yet tested live on Ubuntu with a real sensor failure.
+- **Sensor-loss Boost** (2026-10-18): a test-only `nvidia-smi` wrapper failed on demand. In Automatic and in Manual 60/60, Boost reached 100% (about 4340/4500 RPM) 32-34 seconds after the last good reading. The GUI showed the sensor warning, and Manual writes and turning Boost off were refused. Within 3 seconds of readings returning, Automatic resumed or Manual 60/60 was restored.
