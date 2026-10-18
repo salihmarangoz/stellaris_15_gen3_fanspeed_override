@@ -73,6 +73,76 @@ class FirmwareMuxTests(unittest.TestCase):
         self.save("hybrid")
         self.assertEqual(self.io.data, before)
 
+    def make_mux(self, boot_id):
+        return FirmwareMux(transport=self.io, platform_check=self.platform,
+                           conflict_check=self.conflict, backups=Path(self.directory.name),
+                           require_authorization=False, boot_id=lambda: boot_id)
+
+    def test_reboot_hint_survives_restarts_and_clears_after_switching_back(self):
+        # Review finding: the hint lived in memory, so a service restart lost it
+        # and switching back to the boot-time mode kept it.
+        self.mux = self.make_mux("boot-a")
+        self.assertIsNone(self.mux.read_state()["reboot_required"])
+        self.assertTrue(self.save()["reboot_required"])
+        restarted = self.make_mux("boot-a")
+        self.assertEqual(restarted.read_state()["mode"], "dgpu")
+        self.assertTrue(restarted.read_state()["reboot_required"])
+        self.assertIsNone(self.make_mux("boot-b").read_state()["reboot_required"])
+        self.assertIsNone(self.save("hybrid")["reboot_required"])
+        self.assertIsNone(self.make_mux("boot-a").read_state()["reboot_required"])
+        backup = json.loads(sorted(Path(self.directory.name).iterdir())[0].read_text())
+        self.assertEqual(backup["boot_id"], "boot-a")
+
+    def test_without_a_boot_id_the_first_mode_seen_is_the_boot_mode(self):
+        self.mux = self.make_mux(None)
+        self.assertTrue(self.save()["reboot_required"])
+        self.assertTrue(self.mux.read_state()["reboot_required"])
+        self.assertIsNone(self.save("hybrid")["reboot_required"])
+
+    def test_failed_write_is_read_once_and_reports_the_saved_mode_and_backup(self):
+        def write_then_fail(attributes, data):
+            self.io.writes.append((attributes, data))
+            self.io.data = data
+            raise OSError("Input/output error")
+
+        self.io.write = write_then_fail
+        with self.assertRaisesRegex(RuntimeError, "now reports dgpu mode.*Backup: .*UniWillVariable-"):
+            self.save()
+        self.assertEqual(len(self.io.writes), 1)
+        self.io.write = Mock(side_effect=OSError("Input/output error"))
+        self.io.data = firmware_blob()
+        self.io.read = Mock(side_effect=[(VARIABLE_ATTRIBUTES, self.io.data)] * 2 + [OSError("gone")])
+        with self.assertRaisesRegex(RuntimeError, "could not be read back.*Backup:"):
+            self.save()
+        self.io.write.assert_called_once()
+
+    def test_block_writes_waits_for_a_running_save_and_keeps_later_ones_out(self):
+        import threading
+        import time
+
+        writing, release = threading.Event(), threading.Event()
+        original_write = self.io.write
+
+        def slow_write(attributes, data):
+            writing.set()
+            release.wait(2.0)
+            original_write(attributes, data)
+
+        self.io.write = slow_write
+        first = threading.Thread(target=self.save, daemon=True)
+        first.start()
+        self.assertTrue(writing.wait(2.0))
+        threading.Timer(0.2, release.set).start()
+        started = time.monotonic()
+        self.assertTrue(self.mux.block_writes(2.0))
+        self.assertGreaterEqual(time.monotonic() - started, 0.15)
+        self.assertEqual(len(self.io.writes), 1)
+        later = threading.Thread(target=lambda: self.save("hybrid"), daemon=True)
+        later.start()
+        later.join(0.3)
+        self.assertTrue(later.is_alive())
+        self.assertEqual(len(self.io.writes), 1)
+
     def test_both_confirmations_and_exact_phrase_are_required(self):
         for confirmed, text in ((False, "YES DO IT"), (1, "YES DO IT"),
                                 (True, "yes do it"), (True, "YES DO IT "),

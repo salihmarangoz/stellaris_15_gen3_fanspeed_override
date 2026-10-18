@@ -28,7 +28,14 @@ DEFAULT_CONFIG_PATH = Path("/etc/stellaris-fan-control/config.json")
 SETTINGS_FILENAME = "settings.json"
 LOCK_FILENAME = "backend.lock"
 MAINTENANCE_INTERVAL_SECONDS = AUTO_INTERVAL_SECONDS
-REQUEST_SOCKET_TIMEOUT_SECONDS = 30.0
+# Clients send their whole request right after connecting; this only bounds a stalled peer.
+REQUEST_SOCKET_TIMEOUT_SECONDS = 5.0
+# A MUX save holds its lock for a backup, one efivarfs write and readbacks.
+MUX_STOP_WAIT_SECONDS = 10.0
+# The GUI sends one request at a time; the cap keeps allowed users from exhausting threads
+# and descriptors that the sensor reads need. Other users never get a thread at all.
+MAX_CONCURRENT_REQUESTS = 16
+NOT_ALLOWED_MESSAGE = "This user is not allowed to control the fan service"
 
 # Each IPC request runs in its own server thread: authorize() records the
 # kernel-reported peer there and the MUX authorizer reads it in that thread.
@@ -135,9 +142,16 @@ class LinuxBackendController(BackendController):
         # Every service start begins in Automatic mode, like every Windows launch.
         self.set_mode(True, minimum_temp, maximum_temp)
 
+    def begin_stop(self) -> None:
+        # Before the final 100% write; see BackendController._stopping.
+        self._stopping = True
+
     def stop(self) -> None:
         self._stop_event.set()
         self._maintenance_wakeup.set()
+        # Runs after the final 100% fan write, so waiting never delays it.
+        if not self._mux.block_writes(MUX_STOP_WAIT_SECONDS):
+            LOGGER.error("A MUX firmware save was still running when the service stopped")
         super().stop()
 
     def show_frontend(self, *, force: bool = False) -> bool:
@@ -245,24 +259,63 @@ class PeerCredentialRequestHandler(BackendRequestHandler):
     timeout = REQUEST_SOCKET_TIMEOUT_SECONDS
 
 
+def peer_credentials(connection: socket.socket) -> tuple[int, int, int]:
+    credentials = connection.getsockopt(
+        socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+    )
+    pid, uid, gid = struct.unpack("3i", credentials)
+    return pid, uid, gid
+
+
 class PeerCredentialServer(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
 
     def __init__(self, path: Path, controller: Any, allowed_uids: frozenset[int]) -> None:
         self.controller = controller
         self.allowed_uids = allowed_uids
+        self._request_slots = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
         path.unlink(missing_ok=True)
         super().__init__(str(path), PeerCredentialRequestHandler)
         # Any local user may connect; the kernel-reported peer UID decides access.
         os.chmod(path, 0o666)
 
+    def verify_request(self, request: Any, client_address: Any) -> bool:
+        # Runs on the accept thread before any read or handler thread, so another
+        # local user cannot hold threads or descriptors open.
+        try:
+            _pid, uid, _gid = peer_credentials(request)
+        except OSError:
+            return False
+        if uid in self.allowed_uids:
+            return True
+        try:
+            request.setblocking(False)
+            reply = json.dumps({"ok": False, "error": NOT_ALLOWED_MESSAGE}, separators=(",", ":"))
+            request.send(reply.encode("utf-8") + b"\n")
+        except OSError:
+            pass
+        return False
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._request_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
+
     def authorize(self, connection: socket.socket, request: dict[str, Any]) -> None:
-        credentials = connection.getsockopt(
-            socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
-        )
-        pid, uid, _gid = struct.unpack("3i", credentials)
+        pid, uid, _gid = peer_credentials(connection)
         if uid not in self.allowed_uids:
-            raise PermissionError("This user is not allowed to control the fan service")
+            raise PermissionError(NOT_ALLOWED_MESSAGE)
         start_time = None
         if request.get("command") == "set_mux" and pid > 0:
             # Pin the requester now; polkit is asked later, after the pre-check.
@@ -316,6 +369,7 @@ def run_linux_backend() -> None:
             pass
     finally:
         LOGGER.info("Stopping: setting both fans to 100%")
+        controller.begin_stop()
         server.shutdown()
         server.server_close()
         socket_path.unlink(missing_ok=True)

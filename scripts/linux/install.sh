@@ -43,8 +43,22 @@ if ! python3 -m venv --help >/dev/null 2>&1; then
 fi
 command -v nvidia-smi >/dev/null || echo "Warning: nvidia-smi was not found; Automatic mode needs the NVIDIA driver."
 
+# A failure after stopping the service (for example pip without network) must
+# not leave fan control stopped with the fans at 100% and no explanation.
+service_stopped=0
+restart_after_failure() {
+    local status=$?
+    if [ "$status" -ne 0 ] && [ "$service_stopped" -eq 1 ]; then
+        echo "Installation failed (exit $status); starting fan control again..." >&2
+        systemctl start "$SERVICE" || \
+            echo "Fan control did not start; both fans stay at 100%. Fix the error and rerun the installer." >&2
+    fi
+}
+trap restart_after_failure EXIT
+
 if systemctl is-active --quiet "$SERVICE"; then
     echo "Stopping the running service for the update (both fans go to 100% meanwhile)..."
+    service_stopped=1
     systemctl stop "$SERVICE"
 fi
 

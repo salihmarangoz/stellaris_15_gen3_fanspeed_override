@@ -28,6 +28,7 @@ EFIVAR_PATH = Path("/sys/firmware/efi/efivars") / f"{VARIABLE_NAME}-{VARIABLE_GU
 FS_IOC_GETFLAGS = 0x80086601
 FS_IOC_SETFLAGS = 0x40086602
 FS_IMMUTABLE_FL = 0x00000010
+BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 
 LOGGER = logging.getLogger("stellaris15gen3")
 
@@ -205,6 +206,18 @@ class WindowsFirmwareTransport:
                 raise ctypes.WinError(ctypes.get_last_error())
 
 
+def read_boot_id() -> str | None:
+    """Linux kernel boot ID; None where there is none (Windows)."""
+    try:
+        return BOOT_ID_PATH.read_text(encoding="ascii").strip() or None
+    except OSError:
+        return None
+
+
+def mode_name(value: int) -> str | None:
+    return next((mode for mode, known in MODE_VALUES.items() if known == value), None)
+
+
 def backup_directory() -> Path:
     if os.name == "nt":
         return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "StellarisFanControl" / "mux-backups"
@@ -220,15 +233,18 @@ class FirmwareMux:
         conflict_check: Callable[[], bool] = conflicting_writer,
         backups: Path | None = None,
         require_authorization: bool | None = None,
+        boot_id: Callable[[], str | None] = read_boot_id,
     ) -> None:
         self._transport = transport
         self._platform_check = platform_check
         self._conflict_check = conflict_check
         self._backups = backups
+        self._boot_id = boot_id
+        # Without a boot ID the first saved mode this process saw stands in for the boot mode.
+        self._first_seen_mode: str | None = None
         # Linux saves must pass the polkit password; refuse a caller that forgot it.
         self._require_authorization = os.name != "nt" if require_authorization is None else require_authorization
         self._lock = threading.RLock()
-        self._changed = False
 
     def _io(self) -> FirmwareTransport:
         if self._transport is None:
@@ -246,6 +262,12 @@ class FirmwareMux:
             raise RuntimeError("Unknown/unsupported OemDisplayMode; MUX control is disabled")
         return attributes, data
 
+    def block_writes(self, timeout: float) -> bool:
+        """At service stop: let a save that is already writing finish, then keep
+        every later one out. Request threads are daemon threads, so without this a
+        stop could cut a save off between its backup, write and readback."""
+        return self._lock.acquire(timeout=timeout)
+
     def _refuse_writer(self) -> None:
         if self._conflict_check():
             raise RuntimeError("Stop OEM Control Center/GCUBridge or tccd before changing NVIDIA Optimus")
@@ -255,11 +277,13 @@ class FirmwareMux:
             try:
                 _, data = self._validated_read()
                 conflict = self._conflict_check()
+                mode = mode_name(data[DISPLAY_MODE_OFFSET])
                 return {
                     "available": True,
                     "write_available": not conflict,
-                    "mode": next(mode for mode, value in MODE_VALUES.items() if value == data[DISPLAY_MODE_OFFSET]),
-                    "reboot_required": True if self._changed else None,
+                    "mode": mode,
+                    # Saved, not necessarily active: the firmware applies it at the next boot.
+                    "reboot_required": True if mode != self._mode_at_boot(mode) else None,
                     "experimental": True,
                     "error": "Stop OEM Control Center/GCUBridge or tccd before changing this setting" if conflict else None,
                 }
@@ -267,13 +291,42 @@ class FirmwareMux:
                 return {"available": False, "write_available": False, "mode": None,
                         "experimental": True, "error": str(exc)}
 
+    def _backup_directory(self) -> Path:
+        return self._backups if self._backups is not None else backup_directory()
+
+    def _mode_at_boot(self, saved: str) -> str:
+        """The saved mode this boot started with.
+
+        Every backup records the boot it was taken in, so the first backup of this
+        boot holds the mode before any save; with none, nothing was saved this boot.
+        This survives service and app restarts and clears after switching back.
+        """
+        marker = self._boot_id()
+        if marker is None:
+            if self._first_seen_mode is None:
+                self._first_seen_mode = saved
+            return self._first_seen_mode
+        # Timestamped names sort chronologically.
+        for path in sorted(self._backup_directory().glob("UniWillVariable-*.json")):
+            try:
+                record = json.loads(path.read_text(encoding="ascii"))
+                if record.get("boot_id") != marker:
+                    continue
+                mode = mode_name(bytes.fromhex(record["data_hex"])[DISPLAY_MODE_OFFSET])
+            except (OSError, ValueError, AttributeError, KeyError, TypeError, IndexError):
+                continue
+            if mode is not None:
+                return mode
+        return saved
+
     def _backup(self, attributes: int, data: bytes) -> Path:
-        directory = self._backups if self._backups is not None else backup_directory()
+        directory = self._backup_directory()
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         path = directory / f"UniWillVariable-{stamp}.json"
         record = {"variable": VARIABLE_NAME, "guid": VARIABLE_GUID, "attributes": attributes,
-                  "data_hex": data.hex(), "sha256": hashlib.sha256(data).hexdigest()}
+                  "data_hex": data.hex(), "sha256": hashlib.sha256(data).hexdigest(),
+                  "boot_id": self._boot_id()}
         with path.open("x", encoding="ascii") as stream:
             if os.name != "nt":
                 os.fchmod(stream.fileno(), 0o600)
@@ -307,6 +360,8 @@ class FirmwareMux:
             attributes, before = self._validated_read()
             if before[DISPLAY_MODE_OFFSET] == MODE_VALUES[mode]:
                 return {**self.read_state(), "changed": False}
+            # Pin the boot mode before the first write when no boot ID can track it.
+            self._mode_at_boot(mode_name(before[DISPLAY_MODE_OFFSET]))
             # The password covers only the firmware state it was asked for; a
             # write by anyone in between (or a check that saw no change and asked
             # nothing) must not turn into a write without a password.
@@ -319,10 +374,22 @@ class FirmwareMux:
             desired = bytearray(before)
             desired[DISPLAY_MODE_OFFSET] = MODE_VALUES[mode]
             self._refuse_writer()
-            self._io().write(attributes, bytes(desired))
+            try:
+                self._io().write(attributes, bytes(desired))
+            except Exception as exc:
+                # efivarfs can report an error after the variable was set: read
+                # once (never retry the write) and say what the firmware now holds.
+                try:
+                    saved = mode_name(self._validated_read()[1][DISPLAY_MODE_OFFSET])
+                    now = f"The firmware now reports {saved} mode."
+                except Exception as read_exc:
+                    now = f"The firmware could not be read back ({read_exc})."
+                raise RuntimeError(
+                    f"MUX firmware write failed: {exc}. {now} "
+                    f"No retry or reboot was performed. Backup: {backup}"
+                ) from exc
             if self._validated_read() != (attributes, bytes(desired)):
                 # Do not blindly restore an entire firmware blob after a failed
                 # verification: it could overwrite a concurrent firmware change.
                 raise RuntimeError(f"MUX firmware readback failed. No retry or reboot was performed. Backup: {backup}")
-            self._changed = True
             return {**self.read_state(), "changed": True, "backup": str(backup)}

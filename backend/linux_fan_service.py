@@ -22,6 +22,7 @@ T = TypeVar("T")
 LOGGER = logging.getLogger("stellaris15gen3")
 DEFAULT_STATE_DIRECTORY = Path("/var/lib/stellaris-fan-control")
 TABLE_NAME = "LINUX_EC"
+KEPT_RECENT_BACKUPS = 50
 # The lightbar may forget its state without the bytes changing, so the saved
 # choice is rewritten this often even when the 15-second check finds no drift.
 LIGHTBAR_REFRESH_SECONDS = 15 * 60
@@ -40,7 +41,19 @@ def save_backup(snapshot: dict[str, Any]) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     path = directory / f"{TABLE_NAME}-{timestamp}.json"
     path.write_text(json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
+    prune_backups(directory)
     return path
+
+
+def prune_backups(directory: Path) -> None:
+    """Keep the oldest backup, the EC state before this app, and the newest ones."""
+    # Timestamped names sort chronologically.
+    backups = sorted(directory.glob(f"{TABLE_NAME}-*.json"))
+    for path in backups[1:-KEPT_RECENT_BACKUPS]:
+        try:
+            path.unlink()
+        except OSError as exc:
+            LOGGER.warning("Could not remove old fan backup %s: %s", path, exc)
 
 
 def nvidia_powerd_running(proc_directory: Path = PROC_DIRECTORY) -> bool:
@@ -246,6 +259,10 @@ class LinuxFanService:
             self._desired_dynamic_boost = enabled
 
     def set_dynamic_boost(self, enabled: bool) -> dict[str, Any]:
+        # A JSON string such as "false" would otherwise count as on.
+        if type(enabled) is not bool:
+            raise ValueError("Dynamic Boost must be a boolean")
+
         def operation(client: LinuxEcClient) -> None:
             client.write_dynamic_boost(enabled)
             self._desired_dynamic_boost = enabled

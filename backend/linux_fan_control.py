@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from shared.fan_control_common import MIN_AUTO_DUTY
 from shared.fan_control_ipc import linux_socket_path
 from backend.linux_backend import acquire_process_lock
 from backend.linux_ec import (
@@ -108,8 +109,12 @@ def main() -> None:
                 if args.state == "on":
                     client.set_boost(True)
                 else:
+                    # Leave Boost on the table's own duty, but never below the 30% floor.
                     curve = client.curve()
-                    client.apply_duties(curve["CPU"][0]["Duty"], curve["GPU"][0]["Duty"])
+                    client.apply_duties(
+                        max(MIN_AUTO_DUTY, curve["CPU"][0]["Duty"]),
+                        max(MIN_AUTO_DUTY, curve["GPU"][0]["Duty"]),
+                    )
                 print_json(client.fan_info())
             finally:
                 client.close()

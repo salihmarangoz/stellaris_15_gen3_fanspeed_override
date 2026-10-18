@@ -55,6 +55,12 @@ WINDOWS_CAPABILITIES = {
 }
 
 
+def _lowers_fan_output(method: str, args: tuple[Any, ...]) -> bool:
+    if method == "apply_manual":
+        return any(duty < 100 for duty in args[:2])
+    return method == "set_boost" and not args[0]
+
+
 class BackendController:
     def __init__(self) -> None:
         self._service = FanService.instance()
@@ -101,6 +107,9 @@ class BackendController:
         self._lightbar_thread: threading.Thread | None = None
         self._lightbar_error: str | None = None
         self._gpu_power_error: str | None = None
+        # Set once the Linux service starts stopping: from then on fan output may only go
+        # up, so a request accepted just before the stop cannot undo the final 100% write.
+        self._stopping = False
 
     def start(self, *, start_frontend: bool, monitor_frontend: bool = True) -> None:
         with self._sensor_status_lock:
@@ -386,8 +395,16 @@ class BackendController:
 
     def _call_service(self, method: str, *args: Any, **kwargs: Any) -> Any:
         service = self._service
+
+        def operation() -> Any:
+            # Checked inside the serialized EC lane, so it also covers calls that were
+            # already waiting for the lane when the stop began.
+            if self._stopping and _lowers_fan_output(method, args):
+                raise RuntimeError("The fan service is stopping; both fans stay at 100%")
+            return getattr(service, method)(*args, **kwargs)
+
         return self._hardware_calls.call(
-            lambda: getattr(service, method)(*args, **kwargs),
+            operation,
             self._hardware_timeout,
             on_timeout=lambda: self._mark_output_failure(f"EC {method} timed out"),
             # The same worker retains ownership through this fallback. A late

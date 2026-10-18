@@ -456,6 +456,27 @@ class ControllerSafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Sensor failure"):
             controller.set_boost(False)
 
+    def test_stopping_refuses_lower_fan_output_but_keeps_the_exit_write(self) -> None:
+        # Review finding: a request accepted just before the service stops could
+        # write after the final 100% write.
+        service = FakeLinuxService()
+        controller = controller_with(service)
+        controller.set_mode(False, 40, 80)
+        controller.apply_manual(50, 50, confirmed_low=False)
+        controller._stopping = True
+        with self.assertRaisesRegex(RuntimeError, "stopping"):
+            controller.apply_manual(60, 60, confirmed_low=False)
+        controller.prepare_exit(confirmed=True)
+        with self.assertRaisesRegex(RuntimeError, "stopping"):
+            controller.apply_manual(60, 100, confirmed_low=False)
+        # Refused either way; the refused write above also latched an output fault.
+        with self.assertRaises(RuntimeError):
+            controller.set_boost(False)
+        with self.assertRaisesRegex(RuntimeError, "stopping"):
+            controller._call_service("set_boost", False)
+        controller.set_boost(True)
+        self.assertEqual([write[:2] for write in service.writes], [(50, 50), (100, 100)])
+
     def test_a_manual_write_after_boost_lets_auto_run_again(self) -> None:
         # Review finding: Boost on, then a Manual write (which leaves EC Boost),
         # then Automatic used to stay idle because the cached Boost flag stayed on.
@@ -674,6 +695,11 @@ class LinuxFanServiceTests(unittest.TestCase):
         self.assertEqual(self.client.ctgp, 20)
 
     def test_dynamic_boost_is_set_reported_and_maintained(self) -> None:
+        before = self.client.boost_on
+        for value in ("false", 0, 1, None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.service.set_dynamic_boost(value)
+        self.assertEqual(self.client.boost_on, before)
         state = self.service.set_dynamic_boost(False)
         self.assertEqual((state["dynamic_boost"], state["powerd_running"]), (False, True))
         self.client.boost_on = True
@@ -769,6 +795,62 @@ class PeerCredentialIpcTests(unittest.TestCase):
                 thread.join(timeout=2.0)
                 directory.cleanup()
 
+    def test_other_users_are_refused_before_any_read_or_thread(self) -> None:
+        import socket
+        from backend import linux_backend
+
+        if os.getuid() == 0:
+            self.skipTest("root is always allowed")
+        with patch.object(linux_backend.PeerCredentialRequestHandler, "handle") as handle:
+            directory, path, server, thread = self.run_server(frozenset({0, 65534}))
+            try:
+                # An idle connection that never sends a request is closed at once.
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as idle:
+                    idle.settimeout(2.0)
+                    idle.connect(str(path))
+                    received = b""
+                    while chunk := idle.recv(4096):
+                        received += chunk
+                self.assertIn(b"not allowed", received)
+                handle.assert_not_called()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2.0)
+                directory.cleanup()
+
+    def test_concurrent_requests_are_capped(self) -> None:
+        import socket
+        from backend import linux_backend
+        from shared.fan_control_ipc import BackendClient
+
+        for patcher in (patch.object(linux_backend, "MAX_CONCURRENT_REQUESTS", 2),
+                        patch.object(linux_backend.PeerCredentialRequestHandler, "timeout", 0.5)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        directory, path, server, thread = self.run_server(frozenset({os.getuid()}))
+        server.handle_error = lambda request, client_address: None
+        idle = [socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) for _ in range(3)]
+        try:
+            for connection in idle[:2]:
+                connection.connect(str(path))
+            time.sleep(0.1)
+            # Both slots are held by silent peers: the third connection is closed unserved.
+            idle[2].settimeout(0.4)
+            idle[2].connect(str(path))
+            self.assertEqual(idle[2].recv(4096), b"")
+            # The read timeout frees the slots and normal requests work again.
+            time.sleep(0.7)
+            with patch.dict(os.environ, {"STELLARIS15GEN3_SOCKET": str(path)}):
+                self.assertTrue(BackendClient(timeout=2.0, transport="unix").ping())
+        finally:
+            for connection in idle:
+                connection.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2.0)
+            directory.cleanup()
+
     def test_mux_password_check_targets_the_requesting_process(self) -> None:
         from backend.linux_backend import LinuxBackendController
         from shared.fan_control_ipc import BackendClient
@@ -832,6 +914,43 @@ class PeerCredentialIpcTests(unittest.TestCase):
         worker.join(timeout=2.0)
         self.assertEqual(len(errors), 1)
         self.assertIn("no MUX write", errors[0])
+
+
+class BackupPruningTests(unittest.TestCase):
+    def test_keeps_the_first_backup_and_the_newest_fifty(self) -> None:
+        from backend import linux_fan_service
+
+        with TemporaryDirectory() as root:
+            directory = Path(root) / "fan-backups"
+            directory.mkdir()
+            names = [f"LINUX_EC-2026{index:04d}-000000-000000.json" for index in range(60)]
+            for name in (*names, "unrelated.json"):
+                (directory / name).write_text("{}\n")
+            with patch.object(linux_fan_service, "state_directory", return_value=Path(root)):
+                newest = linux_fan_service.save_backup({"Name": "LINUX_EC"})
+            kept = sorted(path.name for path in directory.glob("LINUX_EC-*.json"))
+            # 61 backups: the first one plus the newest 50 remain.
+            self.assertEqual(kept, [names[0], *names[11:], newest.name])
+            self.assertTrue((directory / "unrelated.json").exists())
+
+
+class LinuxCliTests(unittest.TestCase):
+    def test_boost_off_keeps_the_table_duty_but_never_below_the_floor(self) -> None:
+        from backend import linux_fan_control
+
+        for duties, expected in (((10, 20), (30, 30)), ((50, 40), (50, 40))):
+            client = Mock()
+            client.curve.return_value = {
+                "CPU": [{"Duty": duties[0]}], "GPU": [{"Duty": duties[1]}],
+            }
+            client.fan_info.return_value = {}
+            with self.subTest(duties=duties), \
+                    patch.object(linux_fan_control, "LinuxEcClient", return_value=client), \
+                    patch.object(linux_fan_control, "acquire_process_lock"), \
+                    patch("sys.argv", ["linux_fan_control", "boost", "off", "--apply"]), \
+                    patch("builtins.print"):
+                linux_fan_control.main()
+            client.apply_duties.assert_called_once_with(*expected)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux service only")

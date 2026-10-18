@@ -202,7 +202,12 @@ class BackendClient:
         try:
             with connection:
                 connection.settimeout(timeout)
-                connection.sendall(payload)
+                try:
+                    connection.sendall(payload)
+                except BrokenPipeError:
+                    # The Linux service refuses other users before reading the
+                    # request and closes; its answer is still readable.
+                    pass
                 received = bytearray()
                 while b"\n" not in received:
                     chunk = connection.recv(4096)

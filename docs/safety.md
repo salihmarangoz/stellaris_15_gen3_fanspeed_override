@@ -37,7 +37,7 @@ Automatic mode uses `max(CPU, GPU)` and applies one identical target to both fan
 ## Who Can Control the Fans
 
 - **Windows**: the packaged application is one elevated process. In source mode, only the elevated backend reads sensors, talks to Control Center, or touches the EC; the normal-user frontend sends authenticated loopback requests. Only one frontend, one backend and one Control Center client can run at a time.
-- **Ubuntu**: a root systemd service owns fan control. Only root and the user IDs listed in `/etc/stellaris-fan-control/config.json` (the installing user) may send commands; the kernel's peer credentials decide. The GUI never runs as root and never starts the service.
+- **Ubuntu**: a root systemd service owns fan control. Only root and the user IDs listed in `/etc/stellaris-fan-control/config.json` (the installing user) may send commands; the kernel's peer credentials decide. Other users' connections are answered and closed before any request is read, and at most 16 requests run at once, so no local user can exhaust the service. Once the service starts stopping, it refuses any write that would lower fan output. The GUI never runs as root and never starts the service.
 
 ## What Is Written to the Hardware
 
